@@ -1,37 +1,34 @@
 import streamlit as st
-import pandas as pd
-from datetime import date, datetime
-from PIL import Image
-from fpdf import FPDF
-import requests
-from io import BytesIO
 import firebase_admin
 from firebase_admin import credentials, firestore
+import json
 import os
-
-# --- CONFIGURACIÓN DE LA PÁGINA ---
-st.set_page_config(
-    page_title="Cotizaciones - Jugando y Educando",
-    page_icon="🧸",
-    layout="wide"
-)
 
 # --- INICIALIZACIÓN DE FIREBASE ---
 @st.cache_resource
 def init_firebase():
-    """Inicializa la conexión con Firebase usando las credenciales."""
+    """Inicializa la conexión con Firebase de forma segura."""
     try:
-        # Verifica si el archivo de secretos existe
-        if not os.path.exists("firebase_secrets.json"):
-            st.error("Archivo 'firebase_secrets.json' no encontrado. Asegúrate de que esté en la carpeta correcta.")
+        # Comprueba si la app se está ejecutando en Streamlit Cloud
+        if 'firebase_secrets' in st.secrets:
+            st.write("Cargando credenciales desde Streamlit Secrets...")
+            creds_dict = st.secrets["firebase_secrets"]
+        # Si no, busca el archivo local (para desarrollo)
+        elif os.path.exists("firebase_secrets.json"):
+            st.write("Cargando credenciales desde archivo local...")
+            with open("firebase_secrets.json", "r") as f:
+                creds_dict = json.load(f)
+        else:
+            st.error("No se encontraron credenciales de Firebase. Asegúrate de configurar los Secrets en Streamlit Cloud o tener 'firebase_secrets.json' localmente.")
             return None
-        
+
         # Evita la reinicialización en cada recarga de script
         if not firebase_admin._apps:
-            creds = credentials.Certificate("firebase_secrets.json")
+            creds = credentials.Certificate(creds_dict)
             firebase_admin.initialize_app(creds)
-        
+
         return firestore.client()
+
     except Exception as e:
         st.error(f"Fallo al inicializar Firebase: {e}")
         return None
