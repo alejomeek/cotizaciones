@@ -11,11 +11,12 @@ def init_firebase():
     try:
         # Comprueba si la app se está ejecutando en Streamlit Cloud
         if 'firebase_secrets' in st.secrets:
-            st.write("Cargando credenciales desde Streamlit Secrets...")
-            creds_dict = st.secrets["firebase_secrets"]
+            creds_dict = dict(st.secrets["firebase_secrets"])
+            # **LA CORRECCIÓN ESTÁ AQUÍ**
+            # Reemplaza los caracteres de escape '\\n' con saltos de línea reales
+            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
         # Si no, busca el archivo local (para desarrollo)
         elif os.path.exists("firebase_secrets.json"):
-            st.write("Cargando credenciales desde archivo local...")
             with open("firebase_secrets.json", "r") as f:
                 creds_dict = json.load(f)
         else:
