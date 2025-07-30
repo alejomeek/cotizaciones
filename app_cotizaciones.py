@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import date, datetime
 from PIL import Image
-from fpdf import FPDF # Asegúrate de que esta línea esté
+from fpdf import FPDF
 import requests
 from io import BytesIO
 import firebase_admin
@@ -10,32 +10,33 @@ from firebase_admin import credentials, firestore
 import os
 import json
 
-# --- INICIALIZACIÓN DE FIREBASE ---
+# --- CONFIGURACIÓN DE LA PÁGINA ---
+st.set_page_config(
+    page_title="Cotizaciones - Jugando y Educando",
+    page_icon="🧸",
+    layout="wide"
+)
+
+# --- INICIALIZACIÓN DE FIREBASE (Código seguro para la nube) ---
 @st.cache_resource
 def init_firebase():
     """Inicializa la conexión con Firebase de forma segura."""
     try:
-        # Comprueba si la app se está ejecutando en Streamlit Cloud
         if 'firebase_secrets' in st.secrets:
             creds_dict = dict(st.secrets["firebase_secrets"])
-            # **LA CORRECCIÓN ESTÁ AQUÍ**
-            # Reemplaza los caracteres de escape '\\n' con saltos de línea reales
             creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-        # Si no, busca el archivo local (para desarrollo)
         elif os.path.exists("firebase_secrets.json"):
             with open("firebase_secrets.json", "r") as f:
                 creds_dict = json.load(f)
         else:
-            st.error("No se encontraron credenciales de Firebase. Asegúrate de configurar los Secrets en Streamlit Cloud o tener 'firebase_secrets.json' localmente.")
+            st.error("No se encontraron credenciales de Firebase.")
             return None
 
-        # Evita la reinicialización en cada recarga de script
         if not firebase_admin._apps:
             creds = credentials.Certificate(creds_dict)
             firebase_admin.initialize_app(creds)
-
+        
         return firestore.client()
-
     except Exception as e:
         st.error(f"Fallo al inicializar Firebase: {e}")
         return None
@@ -207,35 +208,39 @@ class PDF(FPDF):
         self.cell(0, 10, f"Página {self.page_no()}", 0, 0, 'C')
 
 # --- FUNCIONES DE FIREBASE ---
+# --- MODIFICADO ---
 @st.cache_data(ttl=60)
-def get_quotes_list(_db):
-    """Obtiene la lista de cotizaciones de Firestore."""
+def get_quotes_list(_db, tienda):
+    """Obtiene la lista de cotizaciones de Firestore, filtrada por tienda."""
     if not _db: return {}
-    quotes_ref = _db.collection('cotizaciones').stream()
+    # --- MODIFICADO ---: Se añade el .where() para filtrar por la tienda seleccionada
+    quotes_ref = _db.collection('cotizaciones').where('tienda', '==', tienda).stream()
     quotes_dict = {}
     for quote in quotes_ref:
         quote_data = quote.to_dict()
         client_name = quote_data.get('cliente_nombre', 'N/A')
         quote_date = quote_data.get('fecha', 'N/A')
-        # Crear una etiqueta legible para el selectbox
         label = f"{client_name} - {quote_date}"
         quotes_dict[label] = quote.id
     return quotes_dict
 
+# --- MODIFICADO ---
 def save_quote(_db, quote_data, quote_id=None):
     """Guarda o actualiza una cotización en Firestore."""
     if not _db:
         st.error("Conexión a la base de datos no disponible.")
+        return
+    # --- NUEVO ---: Se asegura de que el campo 'tienda' esté en los datos a guardar
+    if 'tienda' not in quote_data or not quote_data['tienda']:
+        st.error("Error: No se puede guardar la cotización sin una tienda asignada.")
         return
     try:
         if quote_id:
             _db.collection('cotizaciones').document(quote_id).set(quote_data)
             st.success(f"¡Cotización '{quote_data['cliente_nombre']}' actualizada con éxito!")
         else:
-            # Crea un nuevo documento
             _db.collection('cotizaciones').add(quote_data)
             st.success(f"¡Cotización '{quote_data['cliente_nombre']}' guardada como nueva!")
-        # Limpiar el caché de la lista de cotizaciones para que se actualice
         st.cache_data.clear()
     except Exception as e:
         st.error(f"Error al guardar la cotización: {e}")
@@ -252,7 +257,7 @@ def delete_quote(_db, quote_id):
     except Exception as e:
         st.error(f"Error al eliminar la cotización: {e}")
 
-# --- FUNCIONES AUXILIARES ---
+# --- FUNCIONES AUXILIARES (Sin cambios) ---
 @st.cache_data
 def process_wix_csv(uploaded_file):
     try:
@@ -323,10 +328,10 @@ def generate_pdf_content(quote_data):
 # --- INICIALIZACIÓN DEL ESTADO DE SESIÓN ---
 def init_session_state():
     """Inicializa las variables necesarias en el estado de la sesión."""
-    # Estado de la cotización actual
+    # --- NUEVO ---: Se añade la tienda al estado
+    st.session_state.setdefault('tienda_seleccionada', None)
     st.session_state.setdefault('quote_items', {})
     st.session_state.setdefault('current_quote_id', None)
-    # Campos del formulario
     st.session_state.setdefault('cliente_nombre', "")
     st.session_state.setdefault('cliente_nit', "")
     st.session_state.setdefault('cliente_ciudad', "")
@@ -339,7 +344,7 @@ def init_session_state():
 init_session_state()
 
 def clear_state():
-    """Limpia el estado para una nueva cotización."""
+    """Limpia el estado para una nueva cotización. NO limpia la tienda."""
     st.session_state.quote_items = {}
     st.session_state.current_quote_id = None
     st.session_state.cliente_nombre = ""
@@ -356,217 +361,230 @@ def clear_state():
 with st.sidebar:
     st.title("Gestión de Cotizaciones")
 
-    if st.button("➕ Nueva Cotización", use_container_width=True):
-        clear_state()
-
-    st.divider()
+    # --- NUEVO ---: Selector de tienda
+    tiendas = ["Oviedo", "Barranquilla"]
+    st.session_state.tienda_seleccionada = st.radio(
+        "Selecciona tu tienda:",
+        tiendas,
+        index=tiendas.index(st.session_state.tienda_seleccionada) if st.session_state.tienda_seleccionada else None,
+        horizontal=True,
+    )
     
-    if db:
-        quotes_dict = get_quotes_list(db)
-        if quotes_dict:
-            selected_quote_label = st.selectbox(
-                "Cargar Cotización Existente",
-                options=list(quotes_dict.keys()),
-                index=None,
-                placeholder="Selecciona una cotización..."
-            )
+    # El resto de la app solo se muestra si se ha seleccionado una tienda
+    if st.session_state.tienda_seleccionada:
+        st.success(f"Tienda seleccionada: **{st.session_state.tienda_seleccionada}**")
+        st.divider()
 
-            if st.button("📥 Cargar Cotización", use_container_width=True) and selected_quote_label:
-                quote_id_to_load = quotes_dict[selected_quote_label]
-                quote_data = db.collection('cotizaciones').document(quote_id_to_load).get().to_dict()
+        if st.button("➕ Nueva Cotización", use_container_width=True):
+            clear_state()
+
+        st.divider()
+        
+        if db:
+            # --- MODIFICADO ---: Pasa la tienda seleccionada a la función
+            quotes_dict = get_quotes_list(db, st.session_state.tienda_seleccionada)
+            if quotes_dict:
+                selected_quote_label = st.selectbox(
+                    "Cargar Cotización Existente",
+                    options=list(quotes_dict.keys()),
+                    index=None,
+                    placeholder="Selecciona una cotización..."
+                )
+
+                if st.button("📥 Cargar Cotización", use_container_width=True) and selected_quote_label:
+                    quote_id_to_load = quotes_dict[selected_quote_label]
+                    quote_data = db.collection('cotizaciones').document(quote_id_to_load).get().to_dict()
+                    
+                    st.session_state.current_quote_id = quote_id_to_load
+                    st.session_state.cliente_nombre = quote_data.get('cliente_nombre', '')
+                    st.session_state.cliente_nit = quote_data.get('cliente_nit', '')
+                    st.session_state.cliente_ciudad = quote_data.get('cliente_ciudad', '')
+                    st.session_state.cliente_tel = quote_data.get('cliente_tel', '')
+                    st.session_state.cliente_email = quote_data.get('cliente_email', '')
+                    st.session_state.cliente_dir = quote_data.get('cliente_dir', '')
+                    st.session_state.forma_pago = quote_data.get('forma_pago', "Transferencia bancaria (pago anticipado)")
+                    st.session_state.vigencia = quote_data.get('vigencia', "5 DÍAS HÁBILES")
+                    st.session_state.quote_items = quote_data.get('items', {})
+                    st.success(f"Cotización de '{selected_quote_label}' cargada.")
+                    st.rerun()
+
+        st.divider()
+        
+        # --- MODIFICADO ---: Función para recolectar datos a guardar
+        def collect_data_to_save():
+            return {
+                'tienda': st.session_state.tienda_seleccionada, # Campo clave
+                'fecha': date.today().strftime("%d/%m/%Y"),
+                'cliente_nombre': st.session_state.cliente_nombre,
+                'cliente_nit': st.session_state.cliente_nit,
+                'cliente_ciudad': st.session_state.cliente_ciudad,
+                'cliente_tel': st.session_state.cliente_tel,
+                'cliente_email': st.session_state.cliente_email,
+                'cliente_dir': st.session_state.cliente_dir,
+                'forma_pago': st.session_state.forma_pago,
+                'vigencia': st.session_state.vigencia,
+                'items': st.session_state.quote_items
+            }
+
+        if st.session_state.get('current_quote_id'):
+            st.info(f"Modificando: {st.session_state.cliente_nombre}")
+            if st.button("💾 Guardar Cambios", use_container_width=True, type="primary"):
+                quote_data_to_save = collect_data_to_save()
+                save_quote(db, quote_data_to_save, st.session_state.current_quote_id)
                 
-                # Cargar datos en el estado de la sesión
-                st.session_state.current_quote_id = quote_id_to_load
-                st.session_state.cliente_nombre = quote_data.get('cliente_nombre', '')
-                st.session_state.cliente_nit = quote_data.get('cliente_nit', '')
-                st.session_state.cliente_ciudad = quote_data.get('cliente_ciudad', '')
-                st.session_state.cliente_tel = quote_data.get('cliente_tel', '')
-                st.session_state.cliente_email = quote_data.get('cliente_email', '')
-                st.session_state.cliente_dir = quote_data.get('cliente_dir', '')
-                st.session_state.forma_pago = quote_data.get('forma_pago', "Transferencia bancaria (pago anticipado)")
-                st.session_state.vigencia = quote_data.get('vigencia', "5 DÍAS HÁBILES")
-                st.session_state.quote_items = quote_data.get('items', {})
-                st.success(f"Cotización de '{selected_quote_label}' cargada.")
+        if st.button("💾 Guardar como Nueva Cotización", use_container_width=True):
+            if not st.session_state.cliente_nombre:
+                st.warning("Por favor, introduce al menos el nombre del cliente.")
+            else:
+                quote_data_to_save = collect_data_to_save()
+                save_quote(db, quote_data_to_save, None)
+
+        if st.session_state.get('current_quote_id'):
+            st.divider()
+            if st.button("🗑️ Eliminar Cotización", use_container_width=True):
+                delete_quote(db, st.session_state.current_quote_id)
+                clear_state()
                 st.rerun()
 
-    st.divider()
-
-    if st.session_state.get('current_quote_id'):
-        st.info(f"Modificando: {st.session_state.cliente_nombre}")
-        if st.button("💾 Guardar Cambios", use_container_width=True, type="primary"):
-            # Recolectar datos y guardar
-            quote_data_to_save = {
-                'fecha': date.today().strftime("%d/%m/%Y"),
-                'cliente_nombre': st.session_state.cliente_nombre,
-                'cliente_nit': st.session_state.cliente_nit,
-                'cliente_ciudad': st.session_state.cliente_ciudad,
-                'cliente_tel': st.session_state.cliente_tel,
-                'cliente_email': st.session_state.cliente_email,
-                'cliente_dir': st.session_state.cliente_dir,
-                'forma_pago': st.session_state.forma_pago,
-                'vigencia': st.session_state.vigencia,
-                'items': st.session_state.quote_items
-            }
-            save_quote(db, quote_data_to_save, st.session_state.current_quote_id)
-            
-    if st.button("💾 Guardar como Nueva Cotización", use_container_width=True):
-        if not st.session_state.cliente_nombre:
-            st.warning("Por favor, introduce al menos el nombre del cliente.")
-        else:
-            quote_data_to_save = {
-                'fecha': date.today().strftime("%d/%m/%Y"),
-                'cliente_nombre': st.session_state.cliente_nombre,
-                'cliente_nit': st.session_state.cliente_nit,
-                'cliente_ciudad': st.session_state.cliente_ciudad,
-                'cliente_tel': st.session_state.cliente_tel,
-                'cliente_email': st.session_state.cliente_email,
-                'cliente_dir': st.session_state.cliente_dir,
-                'forma_pago': st.session_state.forma_pago,
-                'vigencia': st.session_state.vigencia,
-                'items': st.session_state.quote_items
-            }
-            save_quote(db, quote_data_to_save, None)
-
-    if st.session_state.get('current_quote_id'):
-        st.divider()
-        if st.button("🗑️ Eliminar Cotización", use_container_width=True):
-            delete_quote(db, st.session_state.current_quote_id)
-            clear_state()
-            st.rerun()
-
 # --- UI PRINCIPAL DE LA APP ---
-try:
-    logo = Image.open("logo_transparente.png")
-    st.image(logo, width=180)
-except FileNotFoundError:
-    st.title("GENERADOR DE COTIZACIONES")
+# --- MODIFICADO ---: La UI principal solo se muestra si se ha seleccionado una tienda
+if not st.session_state.tienda_seleccionada:
+    st.info("👋 ¡Bienvenido! Por favor, selecciona tu tienda en la barra lateral para comenzar.")
+    st.image("logo_transparente.png", width=200)
+else:
+    try:
+        logo = Image.open("logo_transparente.png")
+        st.image(logo, width=180)
+    except FileNotFoundError:
+        st.title("GENERADOR DE COTIZACIONES")
 
-st.markdown("---")
-st.header("Paso 1: Cargar Catálogo de Productos")
-if 'products_df' not in st.session_state:
-    st.session_state.products_df = None
+    st.markdown("---")
+    st.header("Paso 1: Cargar Catálogo de Productos")
+    if 'products_df' not in st.session_state:
+        st.session_state.products_df = None
 
-uploaded_file = st.file_uploader("📤 Selecciona el archivo CSV exportado desde Wix", type=['csv'])
+    uploaded_file = st.file_uploader("📤 Selecciona el archivo CSV exportado desde Wix", type=['csv'])
 
-if uploaded_file:
-    st.session_state.products_df = process_wix_csv(uploaded_file)
+    if uploaded_file:
+        st.session_state.products_df = process_wix_csv(uploaded_file)
 
-if st.session_state.products_df is not None:
-    st.success(f"✅ Catálogo cargado con {len(st.session_state.products_df)} productos.")
-    st.divider()
+    if st.session_state.products_df is not None:
+        st.success(f"✅ Catálogo cargado con {len(st.session_state.products_df)} productos.")
+        st.divider()
 
-    st.header("Paso 2: Información General")
-    c1, c2, c3 = st.columns(3)
-    fecha_cot = c1.date_input("Fecha", value=datetime.strptime(st.session_state.get('fecha', date.today().strftime("%d/%m/%Y")), "%d/%m/%Y"), disabled=True)
-    
-    st.session_state.forma_pago = c1.selectbox(
-        "Forma de Pago",
-        ["Transferencia bancaria (pago anticipado)", "Transferencia bancaria (50% anticipado - 50% contraentrega)", "Transferencia bancaria (contraentrega)", "Transferencia bancaria"],
-        index=["Transferencia bancaria (pago anticipado)", "Transferencia bancaria (50% anticipado - 50% contraentrega)", "Transferencia bancaria (contraentrega)", "Transferencia bancaria"].index(st.session_state.forma_pago)
-    )
-    
-    ciudad_origen = c2.text_input("Ciudad (Origen)", "BOGOTA D.C", disabled=True)
-    entrega = c2.text_input("Entrega", "A CONVENIR CON EL CLIENTE", disabled=True)
-    
-    st.session_state.vigencia = c3.selectbox(
-        "Vigencia", 
-        [f"{i} DÍAS HÁBILES" for i in range(1, 8)], 
-        index=[f"{i} DÍAS HÁBILES" for i in range(1, 8)].index(st.session_state.vigencia)
-    )
-
-    st.subheader("Datos del Cliente")
-    cl1, cl2 = st.columns(2)
-    st.session_state.cliente_nombre = cl1.text_input("Cliente:", value=st.session_state.cliente_nombre)
-    st.session_state.cliente_nit = cl1.text_input("NIT/CC:", value=st.session_state.cliente_nit)
-    st.session_state.cliente_ciudad = cl1.text_input("Ciudad (Destino):", value=st.session_state.cliente_ciudad)
-    st.session_state.cliente_tel = cl2.text_input("Teléfono:", value=st.session_state.cliente_tel)
-    st.session_state.cliente_email = cl2.text_input("Correo:", value=st.session_state.cliente_email)
-    st.session_state.cliente_dir = cl2.text_input("Dirección:", value=st.session_state.cliente_dir)
-
-    st.divider()
-    st.header("Paso 3: Añadir Productos")
-    form_cols = st.columns([2, 1, 1])
-    sku_input = form_cols[0].text_input("Introduce el SKU del producto:")
-    qty_input = form_cols[1].number_input("Cantidad", min_value=1, value=1, step=1)
-    if form_cols[2].button("➕ Añadir Producto", type="primary", use_container_width=True):
-        if sku_input:
-            product = st.session_state.products_df[st.session_state.products_df['sku'] == sku_input]
-            if not product.empty:
-                data = product.iloc[0]
-                sku = data['sku']
-                if sku in st.session_state.quote_items:
-                    st.session_state.quote_items[sku]['cantidad'] += qty_input
-                else:
-                    st.session_state.quote_items[sku] = {'imagen_url': data['imagen_url'], 'nombre': data['nombre'], 'sku': sku, 'cantidad': qty_input, 'precio_unitario': data['precio_iva_incluido']}
-                item = st.session_state.quote_items[sku]
-                item['valor_total'] = item['precio_unitario'] * item['cantidad']
-                if item['cantidad'] > data['inventory']:
-                    st.error(f"⚠️ **Inventario bajo ({data['inventory']} unidades).** Comunicarse para revisar disponibilidad.")
-            else: st.error(f"❌ SKU '{sku_input}' no encontrado.")
-        else: st.warning("⚠️ Introduce un SKU.")
-    
-    st.divider()
-    st.header("Paso 4: Cotización Actual")
-    if not st.session_state.quote_items:
-        st.info("Aún no has añadido productos.")
-    else:
-        cols = st.columns([1.2, 4, 1, 1, 2, 2, 1])
-        with cols[0]: st.markdown("**Imagen**")
-        with cols[1]: st.markdown("**Producto**")
-        with cols[2]: st.markdown("**SKU**")
-        with cols[3]: st.markdown("**Unds.**")
-        with cols[4]: st.markdown("**Vlr. Unit.**")
-        with cols[5]: st.markdown("**Vlr. Total**")
+        # El resto del código de la UI principal va aquí...
+        st.header("Paso 2: Información General")
+        c1, c2, c3 = st.columns(3)
+        fecha_cot = c1.date_input("Fecha", value=datetime.strptime(st.session_state.get('fecha', date.today().strftime("%d/%m/%Y")), "%d/%m/%Y"), disabled=True)
         
-        for sku, item in list(st.session_state.quote_items.items()):
-            cols = st.columns([1.2, 4, 1, 1, 2, 2, 1])
-            cols[0].image(item['imagen_url'], width=70)
-            cols[1].write(item['nombre'])
-            cols[2].write(item['sku'])
-            cols[3].write(str(item['cantidad']))
-            cols[4].write(format_currency(item['precio_unitario']))
-            cols[5].write(format_currency(item['valor_total']))
-            cols[6].button("🗑️", key=f"delete_{sku}", on_click=remove_item, args=(sku,))
+        st.session_state.forma_pago = c1.selectbox(
+            "Forma de Pago",
+            ["Transferencia bancaria (pago anticipado)", "Transferencia bancaria (50% anticipado - 50% contraentrega)", "Transferencia bancaria (contraentrega)", "Transferencia bancaria"],
+            index=["Transferencia bancaria (pago anticipado)", "Transferencia bancaria (50% anticipado - 50% contraentrega)", "Transferencia bancaria (contraentrega)", "Transferencia bancaria"].index(st.session_state.forma_pago)
+        )
+        
+        ciudad_origen = c2.text_input("Ciudad (Origen)", "BOGOTA D.C", disabled=True)
+        entrega = c2.text_input("Entrega", "A CONVENIR CON EL CLIENTE", disabled=True)
+        
+        st.session_state.vigencia = c3.selectbox(
+            "Vigencia", 
+            [f"{i} DÍAS HÁBILES" for i in range(1, 8)], 
+            index=[f"{i} DÍAS HÁBILES" for i in range(1, 8)].index(st.session_state.vigencia)
+        )
+
+        st.subheader("Datos del Cliente")
+        cl1, cl2 = st.columns(2)
+        st.session_state.cliente_nombre = cl1.text_input("Cliente:", value=st.session_state.cliente_nombre)
+        st.session_state.cliente_nit = cl1.text_input("NIT/CC:", value=st.session_state.cliente_nit)
+        st.session_state.cliente_ciudad = cl1.text_input("Ciudad (Destino):", value=st.session_state.cliente_ciudad)
+        st.session_state.cliente_tel = cl2.text_input("Teléfono:", value=st.session_state.cliente_tel)
+        st.session_state.cliente_email = cl2.text_input("Correo:", value=st.session_state.cliente_email)
+        st.session_state.cliente_dir = cl2.text_input("Dirección:", value=st.session_state.cliente_dir)
+
+        st.divider()
+        st.header("Paso 3: Añadir Productos")
+        form_cols = st.columns([2, 1, 1])
+        sku_input = form_cols[0].text_input("Introduce el SKU del producto:")
+        qty_input = form_cols[1].number_input("Cantidad", min_value=1, value=1, step=1)
+        if form_cols[2].button("➕ Añadir Producto", type="primary", use_container_width=True):
+            if sku_input:
+                product = st.session_state.products_df[st.session_state.products_df['sku'] == sku_input]
+                if not product.empty:
+                    data = product.iloc[0]
+                    sku = data['sku']
+                    if sku in st.session_state.quote_items:
+                        st.session_state.quote_items[sku]['cantidad'] += qty_input
+                    else:
+                        st.session_state.quote_items[sku] = {'imagen_url': data['imagen_url'], 'nombre': data['nombre'], 'sku': sku, 'cantidad': qty_input, 'precio_unitario': data['precio_iva_incluido']}
+                    item = st.session_state.quote_items[sku]
+                    item['valor_total'] = item['precio_unitario'] * item['cantidad']
+                    if item['cantidad'] > data['inventory']:
+                        st.error(f"⚠️ **Inventario bajo ({data['inventory']} unidades).** Comunicarse para revisar disponibilidad.")
+                else: st.error(f"❌ SKU '{sku_input}' no encontrado.")
+            else: st.warning("⚠️ Introduce un SKU.")
         
         st.divider()
-        st.subheader("Resumen y Totales")
-        subtotal = sum(item['valor_total'] for item in st.session_state.quote_items.values())
-        total_unidades = sum(item['cantidad'] for item in st.session_state.quote_items.values())
-        costo_flete_str, costo_flete_val = ("INCLUIDO", 0) if subtotal >= 1_000_000 else ("A convenir", 0)
-        total_cotizacion = subtotal + costo_flete_val
-        
-        t1, t2 = st.columns(2)
-        t1.metric("SUBTOTAL", format_currency(subtotal))
-        t1.metric("FLETE", costo_flete_str)
-        t2.metric("SUMA DE UNIDADES", str(total_unidades))
-        t2.metric("TOTAL COTIZACION", format_currency(total_cotizacion))
-        
-        if len(st.session_state.quote_items) > 0:
-            pdf_data_dict = {
-                'fecha': fecha_cot.strftime("%d/%m/%Y"),
-                'cliente_nombre': st.session_state.cliente_nombre,
-                'cliente_nit': st.session_state.cliente_nit,
-                'cliente_ciudad': st.session_state.cliente_ciudad,
-                'cliente_tel': st.session_state.cliente_tel,
-                'cliente_email': st.session_state.cliente_email,
-                'cliente_dir': st.session_state.cliente_dir,
-                'forma_pago': st.session_state.forma_pago,
-                'vigencia': st.session_state.vigencia,
-                'items': st.session_state.quote_items,
-                'subtotal': subtotal,
-                'flete_str': costo_flete_str,
-                'total_unidades': total_unidades,
-                'total_cotizacion': total_cotizacion
-            }
-            pdf_bytes = generate_pdf_content(pdf_data_dict)
+        st.header("Paso 4: Cotización Actual")
+        if not st.session_state.quote_items:
+            st.info("Aún no has añadido productos.")
+        else:
+            cols = st.columns([1.2, 4, 1, 1, 2, 2, 1])
+            with cols[0]: st.markdown("**Imagen**")
+            with cols[1]: st.markdown("**Producto**")
+            with cols[2]: st.markdown("**SKU**")
+            with cols[3]: st.markdown("**Unds.**")
+            with cols[4]: st.markdown("**Vlr. Unit.**")
+            with cols[5]: st.markdown("**Vlr. Total**")
             
-            file_name_cliente = st.session_state.cliente_nombre.replace(' ', '_') if st.session_state.cliente_nombre else 'General'
-            file_name_fecha = fecha_cot.strftime('%Y-%m-%d')
+            for sku, item in list(st.session_state.quote_items.items()):
+                cols = st.columns([1.2, 4, 1, 1, 2, 2, 1])
+                cols[0].image(item['imagen_url'], width=70)
+                cols[1].write(item['nombre'])
+                cols[2].write(item['sku'])
+                cols[3].write(str(item['cantidad']))
+                cols[4].write(format_currency(item['precio_unitario']))
+                cols[5].write(format_currency(item['valor_total']))
+                cols[6].button("🗑️", key=f"delete_{sku}", on_click=remove_item, args=(sku,))
             
-            st.download_button(
-                label="📄 Generar PDF",
-                data=pdf_bytes,
-                file_name=f"Cotizacion_{file_name_cliente}_{file_name_fecha}.pdf",
-                mime="application/pdf",
-                use_container_width=True
-            )
+            st.divider()
+            st.subheader("Resumen y Totales")
+            subtotal = sum(item['valor_total'] for item in st.session_state.quote_items.values())
+            total_unidades = sum(item['cantidad'] for item in st.session_state.quote_items.values())
+            costo_flete_str, costo_flete_val = ("INCLUIDO", 0) if subtotal >= 1_000_000 else ("A convenir", 0)
+            total_cotizacion = subtotal + costo_flete_val
+            
+            t1, t2 = st.columns(2)
+            t1.metric("SUBTOTAL", format_currency(subtotal))
+            t1.metric("FLETE", costo_flete_str)
+            t2.metric("SUMA DE UNIDADES", str(total_unidades))
+            t2.metric("TOTAL COTIZACION", format_currency(total_cotizacion))
+            
+            if len(st.session_state.quote_items) > 0:
+                pdf_data_dict = {
+                    'fecha': fecha_cot.strftime("%d/%m/%Y"),
+                    'cliente_nombre': st.session_state.cliente_nombre,
+                    'cliente_nit': st.session_state.cliente_nit,
+                    'cliente_ciudad': st.session_state.cliente_ciudad,
+                    'cliente_tel': st.session_state.cliente_tel,
+                    'cliente_email': st.session_state.cliente_email,
+                    'cliente_dir': st.session_state.cliente_dir,
+                    'forma_pago': st.session_state.forma_pago,
+                    'vigencia': st.session_state.vigencia,
+                    'items': st.session_state.quote_items,
+                    'subtotal': subtotal,
+                    'flete_str': costo_flete_str,
+                    'total_unidades': total_unidades,
+                    'total_cotizacion': total_cotizacion
+                }
+                pdf_bytes = generate_pdf_content(pdf_data_dict)
+                
+                file_name_cliente = st.session_state.cliente_nombre.replace(' ', '_') if st.session_state.cliente_nombre else 'General'
+                file_name_fecha = fecha_cot.strftime('%Y-%m-%d')
+                
+                st.download_button(
+                    label="📄 Generar PDF",
+                    data=pdf_bytes,
+                    file_name=f"Cotizacion_{file_name_cliente}_{file_name_fecha}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
