@@ -1,8 +1,14 @@
 import streamlit as st
+import pandas as pd
+from datetime import date, datetime
+from PIL import Image
+from fpdf import FPDF # Asegúrate de que esta línea esté
+import requests
+from io import BytesIO
 import firebase_admin
 from firebase_admin import credentials, firestore
-import json
 import os
+import json
 
 # --- INICIALIZACIÓN DE FIREBASE ---
 @st.cache_resource
