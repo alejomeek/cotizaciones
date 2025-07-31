@@ -155,28 +155,37 @@ class PDF(FPDF):
         self.cell(col_widths['price'], 8, "VLR. UNITARIO", 'T', 0, 'C', 1)
         self.cell(col_widths['total'], 8, "VALOR TOTAL", 'T', 1, 'C', 1)
 
-    # --- CORREGIDO V2 ---
+    # --- CORREGIDO V3 ---
     def draw_table_row(self, item, col_widths, fill=False):
-        self.set_font(self.current_font_family, "", 9)
-        self.set_text_color(*self.color_text)
-        self.set_draw_color(*self.color_border)
-        self.set_fill_color(*self.color_secondary)
-        
+        # 1. Calcular altura y verificar si se necesita una nueva página
         line_height = 5
         num_lines = self.get_multicell_lines(item['nombre'], col_widths['name'] - 2)
         name_height = num_lines * line_height
         row_height = max(30, name_height + 4)
 
-        # Comprueba si la fila cabe en la página actual
         if self.get_y() + row_height > 270:
             self.add_page()
             self.draw_table_header(col_widths)
 
-        # Guarda las coordenadas de inicio de la fila
+        # 2. Guardar coordenadas de inicio
         x_start = self.get_x()
         y_start = self.get_y()
 
-        # Dibuja la imagen
+        # 3. Dibujar el fondo y los bordes de la fila PRIMERO
+        self.set_font(self.current_font_family, "", 9)
+        self.set_text_color(*self.color_text)
+        self.set_draw_color(*self.color_border)
+        self.set_fill_color(*self.color_secondary)
+        
+        self.cell(col_widths['img'], row_height, "", 'B', 0, 'C', fill)
+        self.cell(col_widths['name'], row_height, "", 'B', 0, 'C', fill)
+        self.cell(col_widths['sku'], row_height, "", 'B', 0, 'C', fill)
+        self.cell(col_widths['qty'], row_height, "", 'B', 0, 'C', fill)
+        self.cell(col_widths['price'], row_height, "", 'B', 0, 'R', fill)
+        self.cell(col_widths['total'], row_height, "", 'B', 1, 'R', fill)
+
+        # 4. Dibujar el contenido (imagen y texto) ENCIMA del fondo
+        # Imagen
         try:
             response = requests.get(item['imagen_url'], timeout=5)
             if response.status_code == 200:
@@ -187,33 +196,26 @@ class PDF(FPDF):
             self.set_xy(x_start, y_start + v_offset_placeholder)
             self.cell(col_widths['img'], 4, "S/I", 0, 0, 'C')
 
-        # Dibuja el nombre del producto (multi-línea)
+        # Texto del nombre (multi-línea)
         name_v_offset = (row_height - name_height) / 2
         self.set_xy(x_start + col_widths['img'], y_start + name_v_offset)
         self.multi_cell(col_widths['name'], line_height, item['nombre'], border=0, align='C')
         
-        # Calcula la posición Y para las celdas de una sola línea
+        # Texto de las otras celdas (una sola línea)
         text_height = self.font_size
         cell_v_offset = (row_height - text_height) / 2
         
-        # Dibuja las celdas de una sola línea usando un flujo continuo
-        self.set_y(y_start + cell_v_offset) # Establece la altura Y una sola vez
-        self.set_x(x_start + col_widths['img'] + col_widths['name']) # Posición inicial (columna SKU)
-        
+        self.set_xy(x_start + col_widths['img'] + col_widths['name'], y_start + cell_v_offset)
         self.cell(col_widths['sku'], text_height, item['sku'], 0, 0, 'C')
+        self.set_x(x_start + col_widths['img'] + col_widths['name'] + col_widths['sku'])
         self.cell(col_widths['qty'], text_height, str(item['cantidad']), 0, 0, 'C')
+        self.set_x(x_start + col_widths['img'] + col_widths['name'] + col_widths['sku'] + col_widths['qty'])
         self.cell(col_widths['price'], text_height, format_currency(item['precio_unitario']), 0, 0, 'R')
+        self.set_x(x_start + col_widths['img'] + col_widths['name'] + col_widths['sku'] + col_widths['qty'] + col_widths['price'])
         self.cell(col_widths['total'], text_height, format_currency(item['valor_total']), 0, 0, 'R')
-
-        # Dibuja el fondo y el borde de la fila completa al final
-        self.set_xy(x_start, y_start)
-        self.cell(col_widths['img'], row_height, "", 'B', 0, 'C', fill)
-        self.cell(col_widths['name'], row_height, "", 'B', 0, 'C', fill)
-        self.cell(col_widths['sku'], row_height, "", 'B', 0, 'C', fill)
-        self.cell(col_widths['qty'], row_height, "", 'B', 0, 'C', fill)
-        self.cell(col_widths['price'], row_height, "", 'B', 0, 'R', fill)
-        self.cell(col_widths['total'], row_height, "", 'B', 1, 'R', fill)
-
+        
+        # 5. Mover el cursor al final de la fila para la siguiente iteración
+        self.set_y(y_start + row_height)
 
     def footer(self):
         self.set_y(-15)
