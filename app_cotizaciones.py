@@ -155,7 +155,7 @@ class PDF(FPDF):
         self.cell(col_widths['price'], 8, "VLR. UNITARIO", 'T', 0, 'C', 1)
         self.cell(col_widths['total'], 8, "VALOR TOTAL", 'T', 1, 'C', 1)
 
-    # --- CORREGIDO ---
+    # --- CORREGIDO V2 ---
     def draw_table_row(self, item, col_widths, fill=False):
         self.set_font(self.current_font_family, "", 9)
         self.set_text_color(*self.color_text)
@@ -167,57 +167,52 @@ class PDF(FPDF):
         name_height = num_lines * line_height
         row_height = max(30, name_height + 4)
 
-        # --- CORREGIDO ---: Se comprueba el salto de página ANTES de obtener las coordenadas
+        # Comprueba si la fila cabe en la página actual
         if self.get_y() + row_height > 270:
             self.add_page()
             self.draw_table_header(col_widths)
 
-        # --- CORREGIDO ---: Se obtienen las coordenadas DESPUÉS del posible salto de página
-        y_start_row = self.get_y()
-        x_start_row = self.get_x()
+        # Guarda las coordenadas de inicio de la fila
+        x_start = self.get_x()
+        y_start = self.get_y()
 
-        # Dibuja el fondo de la fila
+        # Dibuja la imagen
+        try:
+            response = requests.get(item['imagen_url'], timeout=5)
+            if response.status_code == 200:
+                img_bytes = BytesIO(response.content)
+                self.image(img_bytes, x=x_start + 2, y=y_start + 2, w=col_widths['img'] - 4, h=row_height - 4)
+        except Exception:
+            v_offset_placeholder = (row_height - 4) / 2
+            self.set_xy(x_start, y_start + v_offset_placeholder)
+            self.cell(col_widths['img'], 4, "S/I", 0, 0, 'C')
+
+        # Dibuja el nombre del producto (multi-línea)
+        name_v_offset = (row_height - name_height) / 2
+        self.set_xy(x_start + col_widths['img'], y_start + name_v_offset)
+        self.multi_cell(col_widths['name'], line_height, item['nombre'], border=0, align='C')
+        
+        # Calcula la posición Y para las celdas de una sola línea
+        text_height = self.font_size
+        cell_v_offset = (row_height - text_height) / 2
+        
+        # Dibuja las celdas de una sola línea usando un flujo continuo
+        self.set_y(y_start + cell_v_offset) # Establece la altura Y una sola vez
+        self.set_x(x_start + col_widths['img'] + col_widths['name']) # Posición inicial (columna SKU)
+        
+        self.cell(col_widths['sku'], text_height, item['sku'], 0, 0, 'C')
+        self.cell(col_widths['qty'], text_height, str(item['cantidad']), 0, 0, 'C')
+        self.cell(col_widths['price'], text_height, format_currency(item['precio_unitario']), 0, 0, 'R')
+        self.cell(col_widths['total'], text_height, format_currency(item['valor_total']), 0, 0, 'R')
+
+        # Dibuja el fondo y el borde de la fila completa al final
+        self.set_xy(x_start, y_start)
         self.cell(col_widths['img'], row_height, "", 'B', 0, 'C', fill)
         self.cell(col_widths['name'], row_height, "", 'B', 0, 'C', fill)
         self.cell(col_widths['sku'], row_height, "", 'B', 0, 'C', fill)
         self.cell(col_widths['qty'], row_height, "", 'B', 0, 'C', fill)
         self.cell(col_widths['price'], row_height, "", 'B', 0, 'R', fill)
         self.cell(col_widths['total'], row_height, "", 'B', 1, 'R', fill)
-        
-        # Dibuja la imagen
-        try:
-            response = requests.get(item['imagen_url'], timeout=5)
-            if response.status_code == 200:
-                img_bytes = BytesIO(response.content)
-                # Dibuja la imagen en la posición correcta
-                self.image(img_bytes, x=x_start_row + 2, y=y_start_row + 2, w=col_widths['img'] - 4, h=row_height - 4)
-        except Exception:
-            v_offset_placeholder = (row_height - 4) / 2
-            self.set_xy(x_start_row, y_start_row + v_offset_placeholder)
-            self.cell(col_widths['img'], 4, "S/I", 0, 0, 'C')
-
-        # Dibuja el texto en la posición correcta
-        name_v_offset = (row_height - name_height) / 2
-        self.set_xy(x_start_row + col_widths['img'], y_start_row + name_v_offset)
-        self.multi_cell(col_widths['name'], line_height, item['nombre'], border=0, align='C')
-        
-        text_height = self.font_size
-        cell_v_offset = (row_height - text_height) / 2
-        current_y = y_start_row + cell_v_offset
-        
-        self.set_xy(x_start_row + col_widths['img'] + col_widths['name'], current_y)
-        self.cell(col_widths['sku'], text_height, item['sku'], 0, 0, 'C')
-        
-        self.set_xy(x_start_row + col_widths['img'] + col_widths['name'] + col_widths['sku'], current_y)
-        self.cell(col_widths['qty'], text_height, str(item['cantidad']), 0, 0, 'C')
-        
-        self.set_xy(x_start_row + col_widths['img'] + col_widths['name'] + col_widths['sku'] + col_widths['qty'], current_y)
-        self.cell(col_widths['price'], text_height, format_currency(item['precio_unitario']), 0, 0, 'R')
-        
-        self.set_xy(x_start_row + col_widths['img'] + col_widths['name'] + col_widths['sku'] + col_widths['qty'] + col_widths['price'], current_y)
-        self.cell(col_widths['total'], text_height, format_currency(item['valor_total']), 0, 0, 'R')
-        
-        self.set_y(y_start_row + row_height)
 
 
     def footer(self):
@@ -227,12 +222,10 @@ class PDF(FPDF):
         self.cell(0, 10, f"Página {self.page_no()}", 0, 0, 'C')
 
 # --- FUNCIONES DE FIREBASE ---
-# --- MODIFICADO ---
 @st.cache_data(ttl=60)
 def get_quotes_list(_db, tienda):
     """Obtiene la lista de cotizaciones de Firestore, filtrada por tienda."""
     if not _db: return {}
-    # --- MODIFICADO ---: Se añade el .where() para filtrar por la tienda seleccionada
     quotes_ref = _db.collection('cotizaciones').where('tienda', '==', tienda).stream()
     quotes_dict = {}
     for quote in quotes_ref:
@@ -243,13 +236,11 @@ def get_quotes_list(_db, tienda):
         quotes_dict[label] = quote.id
     return quotes_dict
 
-# --- MODIFICADO ---
 def save_quote(_db, quote_data, quote_id=None):
     """Guarda o actualiza una cotización en Firestore."""
     if not _db:
         st.error("Conexión a la base de datos no disponible.")
         return
-    # --- NUEVO ---: Se asegura de que el campo 'tienda' esté en los datos a guardar
     if 'tienda' not in quote_data or not quote_data['tienda']:
         st.error("Error: No se puede guardar la cotización sin una tienda asignada.")
         return
@@ -276,7 +267,7 @@ def delete_quote(_db, quote_id):
     except Exception as e:
         st.error(f"Error al eliminar la cotización: {e}")
 
-# --- FUNCIONES AUXILIARES (Sin cambios) ---
+# --- FUNCIONES AUXILIARES ---
 @st.cache_data
 def process_wix_csv(uploaded_file):
     try:
@@ -347,7 +338,6 @@ def generate_pdf_content(quote_data):
 # --- INICIALIZACIÓN DEL ESTADO DE SESIÓN ---
 def init_session_state():
     """Inicializa las variables necesarias en el estado de la sesión."""
-    # --- NUEVO ---: Se añade la tienda al estado
     st.session_state.setdefault('tienda_seleccionada', None)
     st.session_state.setdefault('quote_items', {})
     st.session_state.setdefault('current_quote_id', None)
@@ -380,7 +370,6 @@ def clear_state():
 with st.sidebar:
     st.title("Gestión de Cotizaciones")
 
-    # --- NUEVO ---: Selector de tienda
     tiendas = ["Oviedo", "Barranquilla"]
     st.session_state.tienda_seleccionada = st.radio(
         "Selecciona tu tienda:",
@@ -389,7 +378,6 @@ with st.sidebar:
         horizontal=True,
     )
     
-    # El resto de la app solo se muestra si se ha seleccionado una tienda
     if st.session_state.tienda_seleccionada:
         st.success(f"Tienda seleccionada: **{st.session_state.tienda_seleccionada}**")
         st.divider()
@@ -400,7 +388,6 @@ with st.sidebar:
         st.divider()
         
         if db:
-            # --- MODIFICADO ---: Pasa la tienda seleccionada a la función
             quotes_dict = get_quotes_list(db, st.session_state.tienda_seleccionada)
             if quotes_dict:
                 selected_quote_label = st.selectbox(
@@ -429,10 +416,9 @@ with st.sidebar:
 
         st.divider()
         
-        # --- MODIFICADO ---: Función para recolectar datos a guardar
         def collect_data_to_save():
             return {
-                'tienda': st.session_state.tienda_seleccionada, # Campo clave
+                'tienda': st.session_state.tienda_seleccionada,
                 'fecha': date.today().strftime("%d/%m/%Y"),
                 'cliente_nombre': st.session_state.cliente_nombre,
                 'cliente_nit': st.session_state.cliente_nit,
@@ -466,7 +452,6 @@ with st.sidebar:
                 st.rerun()
 
 # --- UI PRINCIPAL DE LA APP ---
-# --- MODIFICADO ---: La UI principal solo se muestra si se ha seleccionado una tienda
 if not st.session_state.tienda_seleccionada:
     st.info("👋 ¡Bienvenido! Por favor, selecciona tu tienda en la barra lateral para comenzar.")
     st.image("logo_transparente.png", width=200)
@@ -491,7 +476,6 @@ else:
         st.success(f"✅ Catálogo cargado con {len(st.session_state.products_df)} productos.")
         st.divider()
 
-        # El resto del código de la UI principal va aquí...
         st.header("Paso 2: Información General")
         c1, c2, c3 = st.columns(3)
         fecha_cot = c1.date_input("Fecha", value=datetime.strptime(st.session_state.get('fecha', date.today().strftime("%d/%m/%Y")), "%d/%m/%Y"), disabled=True)
