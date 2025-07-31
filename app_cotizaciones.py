@@ -43,7 +43,7 @@ def init_firebase():
 
 db = init_firebase()
 
-# --- CLASE PDF PERSONALIZADA (Sin cambios) ---
+# --- CLASE PDF PERSONALIZADA ---
 class PDF(FPDF):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -155,51 +155,70 @@ class PDF(FPDF):
         self.cell(col_widths['price'], 8, "VLR. UNITARIO", 'T', 0, 'C', 1)
         self.cell(col_widths['total'], 8, "VALOR TOTAL", 'T', 1, 'C', 1)
 
+    # --- CORREGIDO ---
     def draw_table_row(self, item, col_widths, fill=False):
         self.set_font(self.current_font_family, "", 9)
         self.set_text_color(*self.color_text)
         self.set_draw_color(*self.color_border)
         self.set_fill_color(*self.color_secondary)
-        x_start_row = self.get_x()
+        
         line_height = 5
         num_lines = self.get_multicell_lines(item['nombre'], col_widths['name'] - 2)
         name_height = num_lines * line_height
         row_height = max(30, name_height + 4)
+
+        # --- CORREGIDO ---: Se comprueba el salto de página ANTES de obtener las coordenadas
         if self.get_y() + row_height > 270:
             self.add_page()
             self.draw_table_header(col_widths)
+
+        # --- CORREGIDO ---: Se obtienen las coordenadas DESPUÉS del posible salto de página
         y_start_row = self.get_y()
-        self.set_x(x_start_row)
+        x_start_row = self.get_x()
+
+        # Dibuja el fondo de la fila
         self.cell(col_widths['img'], row_height, "", 'B', 0, 'C', fill)
         self.cell(col_widths['name'], row_height, "", 'B', 0, 'C', fill)
         self.cell(col_widths['sku'], row_height, "", 'B', 0, 'C', fill)
         self.cell(col_widths['qty'], row_height, "", 'B', 0, 'C', fill)
         self.cell(col_widths['price'], row_height, "", 'B', 0, 'R', fill)
         self.cell(col_widths['total'], row_height, "", 'B', 1, 'R', fill)
+        
+        # Dibuja la imagen
         try:
             response = requests.get(item['imagen_url'], timeout=5)
             if response.status_code == 200:
                 img_bytes = BytesIO(response.content)
+                # Dibuja la imagen en la posición correcta
                 self.image(img_bytes, x=x_start_row + 2, y=y_start_row + 2, w=col_widths['img'] - 4, h=row_height - 4)
         except Exception:
             v_offset_placeholder = (row_height - 4) / 2
             self.set_xy(x_start_row, y_start_row + v_offset_placeholder)
             self.cell(col_widths['img'], 4, "S/I", 0, 0, 'C')
+
+        # Dibuja el texto en la posición correcta
         name_v_offset = (row_height - name_height) / 2
         self.set_xy(x_start_row + col_widths['img'], y_start_row + name_v_offset)
         self.multi_cell(col_widths['name'], line_height, item['nombre'], border=0, align='C')
+        
         text_height = self.font_size
         cell_v_offset = (row_height - text_height) / 2
         current_y = y_start_row + cell_v_offset
+        
         self.set_xy(x_start_row + col_widths['img'] + col_widths['name'], current_y)
         self.cell(col_widths['sku'], text_height, item['sku'], 0, 0, 'C')
+        
         self.set_xy(x_start_row + col_widths['img'] + col_widths['name'] + col_widths['sku'], current_y)
         self.cell(col_widths['qty'], text_height, str(item['cantidad']), 0, 0, 'C')
+        
         self.set_xy(x_start_row + col_widths['img'] + col_widths['name'] + col_widths['sku'] + col_widths['qty'], current_y)
         self.cell(col_widths['price'], text_height, format_currency(item['precio_unitario']), 0, 0, 'R')
+        
         self.set_xy(x_start_row + col_widths['img'] + col_widths['name'] + col_widths['sku'] + col_widths['qty'] + col_widths['price'], current_y)
         self.cell(col_widths['total'], text_height, format_currency(item['valor_total']), 0, 0, 'R')
+        
         self.set_y(y_start_row + row_height)
+
 
     def footer(self):
         self.set_y(-15)
