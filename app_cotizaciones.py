@@ -411,11 +411,27 @@ def init_session_state():
         st.session_state.setdefault(key, value)
 
 def clear_form_state():
-    """Limpia solo el estado del formulario de creación, preservando la tienda."""
+    """Limpia solo el estado del formulario de creación, preservando la tienda y el catálogo."""
     current_tienda = st.session_state.tienda_seleccionada
-    products_df = st.session_state.get('products_df') # Preservar el catálogo cargado
-    st.session_state.clear()
-    init_session_state()
+    products_df = st.session_state.get('products_df')
+    
+    # Reiniciar todas las claves a sus valores por defecto
+    form_keys = [
+        'quote_items', 'current_quote_id', 'cliente_nombre', 'cliente_nit', 
+        'cliente_ciudad', 'cliente_tel', 'cliente_email', 'cliente_dir',
+        'forma_pago', 'vigencia', 'numero_cotizacion', 'estado', 'comentarios'
+    ]
+    defaults = {
+        'quote_items': {}, 'current_quote_id': None, 'cliente_nombre': "", 
+        'cliente_nit': "", 'cliente_ciudad': "", 'cliente_tel': "", 
+        'cliente_email': "", 'cliente_dir': "", 
+        'forma_pago': "Transferencia bancaria (pago anticipado)", 
+        'vigencia': "5 DÍAS HÁBILES", 'numero_cotizacion': None, 
+        'estado': None, 'comentarios': None
+    }
+    for key in form_keys:
+        st.session_state[key] = defaults[key]
+
     st.session_state.tienda_seleccionada = current_tienda
     st.session_state.products_df = products_df
     st.success("Formulario limpiado. Listo para una nueva cotización.")
@@ -428,18 +444,21 @@ with st.sidebar:
     tiendas = ["Oviedo", "Barranquilla"]
     
     # --- CORREGIDO: Lógica del selector de tienda ---
-    def on_store_change():
-        st.session_state.clear()
-        init_session_state()
-        st.session_state.tienda_seleccionada = st.session_state.tienda_selector
-
+    # Guardar la selección anterior para detectar cambios
+    previous_tienda = st.session_state.get('tienda_seleccionada')
+    
+    # El widget de radio actualiza st.session_state.tienda_seleccionada directamente
     st.radio(
         "Selecciona tu tienda:",
         tiendas,
-        key="tienda_selector",
-        on_change=on_store_change,
+        key="tienda_seleccionada",
         horizontal=True,
     )
+
+    # Si la tienda ha cambiado, limpiar el formulario y recargar la página.
+    if st.session_state.tienda_seleccionada != previous_tienda and previous_tienda is not None:
+        clear_form_state()
+        st.rerun()
 
     if st.session_state.tienda_seleccionada:
         st.success(f"Tienda seleccionada: **{st.session_state.tienda_seleccionada}**")
@@ -481,21 +500,11 @@ else:
                             quote_id_to_load = quotes_dict[selected_quote_label]
                             quote_data = db.collection('cotizaciones').document(quote_id_to_load).get().to_dict()
                             
-                            clear_form_state() # Limpia antes de cargar para evitar datos mezclados
+                            clear_form_state()
                             
                             st.session_state.current_quote_id = quote_id_to_load
-                            st.session_state.cliente_nombre = quote_data.get('cliente_nombre', '')
-                            st.session_state.cliente_nit = quote_data.get('cliente_nit', '')
-                            st.session_state.cliente_ciudad = quote_data.get('cliente_ciudad', '')
-                            st.session_state.cliente_tel = quote_data.get('cliente_tel', '')
-                            st.session_state.cliente_email = quote_data.get('cliente_email', '')
-                            st.session_state.cliente_dir = quote_data.get('cliente_dir', '')
-                            st.session_state.forma_pago = quote_data.get('forma_pago', "Transferencia bancaria (pago anticipado)")
-                            st.session_state.vigencia = quote_data.get('vigencia', "5 DÍAS HÁBILES")
-                            st.session_state.quote_items = quote_data.get('items', {})
-                            st.session_state.numero_cotizacion = quote_data.get('numero_cotizacion')
-                            st.session_state.estado = quote_data.get('estado')
-                            st.session_state.comentarios = quote_data.get('comentarios')
+                            for key, value in quote_data.items():
+                                st.session_state[key] = value
                             
                             st.success(f"Cotización '{st.session_state.numero_cotizacion}' cargada.")
                             st.rerun()
@@ -528,13 +537,11 @@ else:
             st.header("Paso 2: Información General")
             c1, c2, c3 = st.columns(3)
             c1.date_input("Fecha", value=datetime.now(), disabled=True, key="fecha")
-            # --- CORREGIDO: Se añaden los campos faltantes ---
             c2.text_input("Ciudad (Origen)", "BOGOTA D.C", disabled=True)
             c2.text_input("Entrega", "A CONVENIR CON EL CLIENTE", disabled=True)
             
-            # --- CORREGIDO: Uso de `key` para vincular estado ---
-            st.selectbox("Forma de Pago", ["Transferencia bancaria (pago anticipado)", "50% anticipado - 50% contraentrega", "Contraentrega"], key="forma_pago", index=0, help=None)
-            c3.selectbox("Vigencia", [f"{i} DÍAS HÁBILES" for i in range(1, 8)], key="vigencia", index=4, help=None)
+            st.selectbox("Forma de Pago", ["Transferencia bancaria (pago anticipado)", "50% anticipado - 50% contraentrega", "Contraentrega"], key="forma_pago", index=0)
+            c3.selectbox("Vigencia", [f"{i} DÍAS HÁBILES" for i in range(1, 8)], key="vigencia", index=4)
 
             st.subheader("Datos del Cliente")
             cl1, cl2 = st.columns(2)
@@ -697,9 +704,8 @@ else:
                     if changes_to_update:
                         update_quotes_tracking(db, changes_to_update)
                         st.cache_data.clear()
-                        if 'original_f' in st.session_state:
+                        if 'original_df' in st.session_state:
                             del st.session_state.original_df
                         st.rerun()
                     else:
                         st.toast("No se detectaron cambios para guardar.")
-
