@@ -498,9 +498,11 @@ else:
                             
                             st.session_state.current_quote_id = quote_id_to_load
                             for key, value in quote_data.items():
-                                # --- CORREGIDO: Conversión de fecha al cargar ---
                                 if key == 'fecha' and isinstance(value, str):
                                     st.session_state.fecha = datetime.strptime(value, "%d/%m/%Y")
+                                # --- CORREGIDO: Asignación correcta de 'items' a 'quote_items' ---
+                                elif key == 'items':
+                                    st.session_state.quote_items = value
                                 else:
                                     st.session_state[key] = value
                             
