@@ -370,7 +370,8 @@ def generate_pdf_content(quote_data):
     total_label_x = 100
     totals_y_start = pdf.get_y() + 5 
     pdf.set_font(pdf.current_font_family, "", 10)
-    pdf.set_text_color(*self.color_text)
+    # --- CORREGIDO ---
+    pdf.set_text_color(*pdf.color_text)
     pdf.set_xy(total_label_x, totals_y_start)
     pdf.cell(70, 8, "SUBTOTAL", 0, 0, 'R')
     pdf.set_font(pdf.current_font_family, "B", 10)
@@ -386,11 +387,13 @@ def generate_pdf_content(quote_data):
     pdf.set_font(pdf.current_font_family, "B", 10)
     pdf.cell(30, 8, str(quote_data['total_unidades']), 0, 1, 'R')
     pdf.set_x(total_label_x)
-    pdf.set_draw_color(*self.color_border)
+    # --- CORREGIDO ---
+    pdf.set_draw_color(*pdf.color_border)
     pdf.line(total_label_x + 5, pdf.get_y(), 200, pdf.get_y())
     pdf.ln(2)
     pdf.set_font(pdf.current_font_family, "B", 11)
-    pdf.set_text_color(*self.color_primary)
+    # --- CORREGIDO ---
+    pdf.set_text_color(*pdf.color_primary)
     pdf.set_x(total_label_x)
     pdf.cell(70, 10, "TOTAL COTIZACION INCLUIDO IVA", 0, 0, 'R')
     pdf.set_font(pdf.current_font_family, "B", 12)
@@ -415,12 +418,12 @@ def clear_form_state():
     current_tienda = st.session_state.tienda_seleccionada
     products_df = st.session_state.get('products_df')
     
-    # Reiniciar todas las claves a sus valores por defecto
-    form_keys = [
+    form_keys_to_reset = [
         'quote_items', 'current_quote_id', 'cliente_nombre', 'cliente_nit', 
         'cliente_ciudad', 'cliente_tel', 'cliente_email', 'cliente_dir',
         'forma_pago', 'vigencia', 'numero_cotizacion', 'estado', 'comentarios'
     ]
+    
     defaults = {
         'quote_items': {}, 'current_quote_id': None, 'cliente_nombre': "", 
         'cliente_nit': "", 'cliente_ciudad': "", 'cliente_tel': "", 
@@ -429,8 +432,9 @@ def clear_form_state():
         'vigencia': "5 DÍAS HÁBILES", 'numero_cotizacion': None, 
         'estado': None, 'comentarios': None
     }
-    for key in form_keys:
-        st.session_state[key] = defaults[key]
+
+    for key in form_keys_to_reset:
+        st.session_state[key] = defaults.get(key)
 
     st.session_state.tienda_seleccionada = current_tienda
     st.session_state.products_df = products_df
@@ -443,20 +447,18 @@ with st.sidebar:
     st.title("Gestión de Cotizaciones")
     tiendas = ["Oviedo", "Barranquilla"]
     
-    # --- CORREGIDO: Lógica del selector de tienda ---
-    # Guardar la selección anterior para detectar cambios
     previous_tienda = st.session_state.get('tienda_seleccionada')
     
-    # El widget de radio actualiza st.session_state.tienda_seleccionada directamente
-    st.radio(
+    selected_tienda = st.radio(
         "Selecciona tu tienda:",
         tiendas,
-        key="tienda_seleccionada",
+        key="tienda_selector",
         horizontal=True,
+        index=tiendas.index(previous_tienda) if previous_tienda in tiendas else 0
     )
 
-    # Si la tienda ha cambiado, limpiar el formulario y recargar la página.
-    if st.session_state.tienda_seleccionada != previous_tienda and previous_tienda is not None:
+    if selected_tienda != previous_tienda:
+        st.session_state.tienda_seleccionada = selected_tienda
         clear_form_state()
         st.rerun()
 
@@ -540,8 +542,8 @@ else:
             c2.text_input("Ciudad (Origen)", "BOGOTA D.C", disabled=True)
             c2.text_input("Entrega", "A CONVENIR CON EL CLIENTE", disabled=True)
             
-            st.selectbox("Forma de Pago", ["Transferencia bancaria (pago anticipado)", "50% anticipado - 50% contraentrega", "Contraentrega"], key="forma_pago", index=0)
-            c3.selectbox("Vigencia", [f"{i} DÍAS HÁBILES" for i in range(1, 8)], key="vigencia", index=4)
+            st.selectbox("Forma de Pago", ["Transferencia bancaria (pago anticipado)", "50% anticipado - 50% contraentrega", "Contraentrega"], key="forma_pago")
+            c3.selectbox("Vigencia", [f"{i} DÍAS HÁBILES" for i in range(1, 8)], key="vigencia")
 
             st.subheader("Datos del Cliente")
             cl1, cl2 = st.columns(2)
