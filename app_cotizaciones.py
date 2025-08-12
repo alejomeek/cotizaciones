@@ -272,7 +272,8 @@ def save_quote(db, quote_data, quote_id=None):
         return None
     try:
         if quote_id:
-            db.collection('cotizaciones').document(quote_id).set(quote_data, merge=True)
+            # --- CORREGIDO: Usar update() en lugar de set(merge=True) ---
+            db.collection('cotizaciones').document(quote_id).update(quote_data)
             st.success(f"¡Cotización '{quote_data.get('numero_cotizacion', '')}' actualizada!")
         else:
             quote_number = get_next_quote_number(db, quote_data['tienda'])
@@ -497,7 +498,6 @@ else:
                             clear_form_state()
                             
                             st.session_state.current_quote_id = quote_id_to_load
-                            # --- CORREGIDO: Asignación explícita y segura de datos ---
                             st.session_state.cliente_nombre = quote_data.get('cliente_nombre', '')
                             st.session_state.cliente_nit = quote_data.get('cliente_nit', '')
                             st.session_state.cliente_ciudad = quote_data.get('cliente_ciudad', '')
