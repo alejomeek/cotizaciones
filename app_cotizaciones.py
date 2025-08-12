@@ -415,11 +415,9 @@ def clear_form_state():
     current_tienda = st.session_state.tienda_seleccionada
     products_df = st.session_state.get('products_df')
     
-    # Limpiar todas las claves para evitar errores de widgets no registrados
     for key in list(st.session_state.keys()):
         del st.session_state[key]
     
-    # Reiniciar el estado desde cero
     init_session_state()
     st.session_state.tienda_seleccionada = current_tienda
     st.session_state.products_df = products_df
@@ -532,8 +530,7 @@ else:
             st.header("Paso 2: Información General")
             c1, c2, c3 = st.columns(3)
             c1.date_input("Fecha", value=datetime.now(), disabled=True, key="fecha")
-            # --- CORREGIDO: Layout de columnas ---
-            c2.text_input("Ciudad (Origen)", "BOGOTA D.C", disabled=True)
+            c1.text_input("Ciudad (Origen)", "BOGOTA D.C", disabled=True)
             c2.text_input("Entrega", "A CONVENIR CON EL CLIENTE", disabled=True)
             c2.selectbox("Forma de Pago", ["Transferencia bancaria (pago anticipado)", "50% anticipado - 50% contraentrega", "Contraentrega"], key="forma_pago")
             c3.selectbox("Vigencia", [f"{i} DÍAS HÁBILES" for i in range(1, 8)], key="vigencia")
@@ -681,7 +678,6 @@ else:
                     df,
                     column_config={
                         "id": None,
-                        # --- CORREGIDO: Columnas deshabilitadas ---
                         "N° Cotización": st.column_config.TextColumn(disabled=True),
                         "Fecha": st.column_config.TextColumn(disabled=True),
                         "Cliente": st.column_config.TextColumn(disabled=True),
