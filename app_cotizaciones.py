@@ -9,7 +9,6 @@ import firebase_admin
 from firebase_admin import credentials, firestore, exceptions
 import os
 import json
-# --- CORREGIDO: Se añade la importación correcta ---
 from google.cloud.exceptions import NotFound
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
@@ -247,7 +246,6 @@ def get_next_quote_number(db, tienda):
         new_number = get_next_quote_number_transaction(db.transaction(), counter_ref, tienda_key)
         prefix = "OV" if tienda == "Oviedo" else "BQ"
         return f"{prefix}-{str(new_number).zfill(4)}"
-    # --- CORREGIDO: Se usa la excepción correcta ---
     except NotFound:
         counter_ref.set({tienda_key: 1})
         prefix = "OV" if tienda == "Oviedo" else "BQ"
@@ -418,24 +416,12 @@ def clear_form_state():
     current_tienda = st.session_state.tienda_seleccionada
     products_df = st.session_state.get('products_df')
     
-    form_keys_to_reset = [
-        'quote_items', 'current_quote_id', 'cliente_nombre', 'cliente_nit', 
-        'cliente_ciudad', 'cliente_tel', 'cliente_email', 'cliente_dir',
-        'forma_pago', 'vigencia', 'numero_cotizacion', 'estado', 'comentarios'
-    ]
+    # Limpiar todas las claves para evitar errores de widgets no registrados
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
     
-    defaults = {
-        'quote_items': {}, 'current_quote_id': None, 'cliente_nombre': "", 
-        'cliente_nit': "", 'cliente_ciudad': "", 'cliente_tel': "", 
-        'cliente_email': "", 'cliente_dir': "", 
-        'forma_pago': "Transferencia bancaria (pago anticipado)", 
-        'vigencia': "5 DÍAS HÁBILES", 'numero_cotizacion': None, 
-        'estado': None, 'comentarios': None
-    }
-
-    for key in form_keys_to_reset:
-        st.session_state[key] = defaults.get(key)
-
+    # Reiniciar el estado desde cero
+    init_session_state()
     st.session_state.tienda_seleccionada = current_tienda
     st.session_state.products_df = products_df
     st.success("Formulario limpiado. Listo para una nueva cotización.")
@@ -447,20 +433,31 @@ with st.sidebar:
     st.title("Gestión de Cotizaciones")
     tiendas = ["Oviedo", "Barranquilla"]
     
-    previous_tienda = st.session_state.get('tienda_seleccionada')
-    
-    selected_tienda = st.radio(
+    # --- CORREGIDO: Lógica del selector de tienda ---
+    def on_store_change():
+        # Esta función se llama solo cuando el usuario hace clic en una tienda diferente.
+        new_store = st.session_state.tienda_selector
+        products_df = st.session_state.get('products_df')
+
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        
+        init_session_state()
+        st.session_state.tienda_seleccionada = new_store
+        st.session_state.products_df = products_df
+
+    # Inicializar la tienda en el primer renderizado
+    if 'tienda_seleccionada' not in st.session_state or st.session_state.tienda_seleccionada is None:
+        st.session_state.tienda_seleccionada = tiendas[0]
+
+    st.radio(
         "Selecciona tu tienda:",
         tiendas,
         key="tienda_selector",
+        on_change=on_store_change,
         horizontal=True,
-        index=tiendas.index(previous_tienda) if previous_tienda in tiendas else 0
+        index=tiendas.index(st.session_state.tienda_seleccionada)
     )
-
-    if selected_tienda != previous_tienda:
-        st.session_state.tienda_seleccionada = selected_tienda
-        clear_form_state()
-        st.rerun()
 
     if st.session_state.tienda_seleccionada:
         st.success(f"Tienda seleccionada: **{st.session_state.tienda_seleccionada}**")
