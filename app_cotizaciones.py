@@ -229,15 +229,21 @@ class PDF(FPDF):
         self.cell(0, 10, f"Página {self.page_no()}", 0, 0, 'C')
 
 # --- FUNCIONES DE FIREBASE ---
+# --- CORREGIDO ---
 @firestore.transactional
 def get_next_quote_number_transaction(transaction, counter_ref, tienda_key):
+    """Transacción segura que crea el contador si no existe."""
     snapshot = counter_ref.get(transaction=transaction)
-    current_number = snapshot.get(tienda_key) or 0
+    data = snapshot.to_dict() or {}
+    current_number = data.get(tienda_key, 0)
     new_number = current_number + 1
-    transaction.update(counter_ref, {tienda_key: new_number})
+    # Usar set con merge=True para crear o actualizar el campo de la tienda
+    transaction.set(counter_ref, {tienda_key: new_number}, merge=True)
     return new_number
 
+# --- CORREGIDO ---
 def get_next_quote_number(db, tienda):
+    """Obtiene el siguiente número de cotización para una tienda de forma robusta."""
     if not db: return None
     tienda_key = tienda.lower()
     counter_ref = db.collection('counters').document('cotizaciones')
@@ -246,10 +252,6 @@ def get_next_quote_number(db, tienda):
         new_number = get_next_quote_number_transaction(db.transaction(), counter_ref, tienda_key)
         prefix = "OV" if tienda == "Oviedo" else "BQ"
         return f"{prefix}-{str(new_number).zfill(4)}"
-    except NotFound:
-        counter_ref.set({tienda_key: 1})
-        prefix = "OV" if tienda == "Oviedo" else "BQ"
-        return f"{prefix}-0001"
     except Exception as e:
         st.error(f"Error al obtener número de cotización: {e}")
         return None
@@ -433,9 +435,7 @@ with st.sidebar:
     st.title("Gestión de Cotizaciones")
     tiendas = ["Oviedo", "Barranquilla"]
     
-    # --- CORREGIDO: Lógica del selector de tienda ---
     def on_store_change():
-        # Esta función se llama solo cuando el usuario hace clic en una tienda diferente.
         new_store = st.session_state.tienda_selector
         products_df = st.session_state.get('products_df')
 
@@ -446,7 +446,6 @@ with st.sidebar:
         st.session_state.tienda_seleccionada = new_store
         st.session_state.products_df = products_df
 
-    # Inicializar la tienda en el primer renderizado
     if 'tienda_seleccionada' not in st.session_state or st.session_state.tienda_seleccionada is None:
         st.session_state.tienda_seleccionada = tiendas[0]
 
