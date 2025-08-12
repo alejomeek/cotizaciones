@@ -9,6 +9,8 @@ import firebase_admin
 from firebase_admin import credentials, firestore, exceptions
 import os
 import json
+# --- CORREGIDO: Se añade la importación correcta ---
+from google.cloud.exceptions import NotFound
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
@@ -245,7 +247,8 @@ def get_next_quote_number(db, tienda):
         new_number = get_next_quote_number_transaction(db.transaction(), counter_ref, tienda_key)
         prefix = "OV" if tienda == "Oviedo" else "BQ"
         return f"{prefix}-{str(new_number).zfill(4)}"
-    except exceptions.NotFound:
+    # --- CORREGIDO: Se usa la excepción correcta ---
+    except NotFound:
         counter_ref.set({tienda_key: 1})
         prefix = "OV" if tienda == "Oviedo" else "BQ"
         return f"{prefix}-0001"
@@ -415,7 +418,6 @@ def clear_form_state():
     current_tienda = st.session_state.tienda_seleccionada
     products_df = st.session_state.get('products_df')
     
-    # Reiniciar todas las claves a sus valores por defecto
     form_keys_to_reset = [
         'quote_items', 'current_quote_id', 'cliente_nombre', 'cliente_nit', 
         'cliente_ciudad', 'cliente_tel', 'cliente_email', 'cliente_dir',
@@ -615,7 +617,6 @@ else:
                     if not st.session_state.cliente_nombre:
                         st.warning("Por favor, introduce al menos el nombre del cliente.")
                     else:
-                        # --- CORREGIDO: Construcción explícita del diccionario a guardar ---
                         quote_data_to_save = {
                             'tienda': st.session_state.tienda_seleccionada,
                             'fecha': st.session_state.fecha.strftime("%d/%m/%Y"),
