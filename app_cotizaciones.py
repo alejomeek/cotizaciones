@@ -350,7 +350,8 @@ def format_currency(value):
     return f"${value:,.0f}".replace(",", ".")
 
 def remove_item(sku):
-    if sku in st.session_state.quote_items: del st.session_state.quote_items[sku]
+    if sku in st.session_state.quote_items:
+        del st.session_state.quote_items[sku]
 
 def generate_pdf_content(quote_data):
     pdf = PDF('P', 'mm', 'A4')
@@ -369,7 +370,7 @@ def generate_pdf_content(quote_data):
     total_label_x = 100
     totals_y_start = pdf.get_y() + 5 
     pdf.set_font(pdf.current_font_family, "", 10)
-    pdf.set_text_color(*pdf.color_text)
+    pdf.set_text_color(*self.color_text)
     pdf.set_xy(total_label_x, totals_y_start)
     pdf.cell(70, 8, "SUBTOTAL", 0, 0, 'R')
     pdf.set_font(pdf.current_font_family, "B", 10)
@@ -385,11 +386,11 @@ def generate_pdf_content(quote_data):
     pdf.set_font(pdf.current_font_family, "B", 10)
     pdf.cell(30, 8, str(quote_data['total_unidades']), 0, 1, 'R')
     pdf.set_x(total_label_x)
-    pdf.set_draw_color(*pdf.color_border)
+    pdf.set_draw_color(*self.color_border)
     pdf.line(total_label_x + 5, pdf.get_y(), 200, pdf.get_y())
     pdf.ln(2)
     pdf.set_font(pdf.current_font_family, "B", 11)
-    pdf.set_text_color(*pdf.color_primary)
+    pdf.set_text_color(*self.color_primary)
     pdf.set_x(total_label_x)
     pdf.cell(70, 10, "TOTAL COTIZACION INCLUIDO IVA", 0, 0, 'R')
     pdf.set_font(pdf.current_font_family, "B", 12)
@@ -398,6 +399,7 @@ def generate_pdf_content(quote_data):
 
 # --- INICIALIZACIÓN Y GESTIÓN DEL ESTADO DE SESIÓN ---
 def init_session_state():
+    """Inicializa todas las claves necesarias en el estado de la sesión si no existen."""
     defaults = {
         'tienda_seleccionada': None, 'quote_items': {}, 'current_quote_id': None,
         'cliente_nombre': "", 'cliente_nit': "", 'cliente_ciudad': "",
@@ -409,8 +411,13 @@ def init_session_state():
         st.session_state.setdefault(key, value)
 
 def clear_form_state():
-    """Limpia solo el estado del formulario de creación."""
-    init_session_state() # Reinicia todo a los valores por defecto, excepto la tienda
+    """Limpia solo el estado del formulario de creación, preservando la tienda."""
+    current_tienda = st.session_state.tienda_seleccionada
+    products_df = st.session_state.get('products_df') # Preservar el catálogo cargado
+    st.session_state.clear()
+    init_session_state()
+    st.session_state.tienda_seleccionada = current_tienda
+    st.session_state.products_df = products_df
     st.success("Formulario limpiado. Listo para una nueva cotización.")
 
 init_session_state()
@@ -420,19 +427,19 @@ with st.sidebar:
     st.title("Gestión de Cotizaciones")
     tiendas = ["Oviedo", "Barranquilla"]
     
-    # Selector de tienda
-    selected_tienda = st.radio(
+    # --- CORREGIDO: Lógica del selector de tienda ---
+    def on_store_change():
+        st.session_state.clear()
+        init_session_state()
+        st.session_state.tienda_seleccionada = st.session_state.tienda_selector
+
+    st.radio(
         "Selecciona tu tienda:",
         tiendas,
         key="tienda_selector",
+        on_change=on_store_change,
         horizontal=True,
     )
-    
-    # Si la tienda cambia, resetea todo
-    if st.session_state.get('tienda_seleccionada') != selected_tienda:
-        st.session_state.clear()
-        st.session_state.tienda_seleccionada = selected_tienda
-        st.rerun()
 
     if st.session_state.tienda_seleccionada:
         st.success(f"Tienda seleccionada: **{st.session_state.tienda_seleccionada}**")
@@ -440,7 +447,10 @@ with st.sidebar:
 # --- UI PRINCIPAL ---
 if not st.session_state.tienda_seleccionada:
     st.info("👋 ¡Bienvenido! Por favor, selecciona tu tienda en la barra lateral para comenzar.")
-    st.image("logo_transparente.png", width=200)
+    try:
+        st.image("logo_transparente.png", width=200)
+    except FileNotFoundError:
+        pass
 else:
     tab1, tab2 = st.tabs(["📝 Crear Cotización", "📊 Seguimiento de Cotizaciones"])
 
@@ -471,7 +481,8 @@ else:
                             quote_id_to_load = quotes_dict[selected_quote_label]
                             quote_data = db.collection('cotizaciones').document(quote_id_to_load).get().to_dict()
                             
-                            # Cargar todos los datos al estado de sesión
+                            clear_form_state() # Limpia antes de cargar para evitar datos mezclados
+                            
                             st.session_state.current_quote_id = quote_id_to_load
                             st.session_state.cliente_nombre = quote_data.get('cliente_nombre', '')
                             st.session_state.cliente_nit = quote_data.get('cliente_nit', '')
@@ -516,38 +527,43 @@ else:
 
             st.header("Paso 2: Información General")
             c1, c2, c3 = st.columns(3)
-            st.session_state.fecha = c1.date_input("Fecha", value=datetime.now(), disabled=True)
-            st.session_state.forma_pago = c1.selectbox("Forma de Pago", ["Transferencia bancaria (pago anticipado)", "50% anticipado - 50% contraentrega", "Contraentrega"], index=0, key="pago_ui")
-            st.session_state.vigencia = c3.selectbox("Vigencia", [f"{i} DÍAS HÁBILES" for i in range(1, 8)], index=4, key="vigencia_ui")
+            c1.date_input("Fecha", value=datetime.now(), disabled=True, key="fecha")
+            # --- CORREGIDO: Se añaden los campos faltantes ---
+            c2.text_input("Ciudad (Origen)", "BOGOTA D.C", disabled=True)
+            c2.text_input("Entrega", "A CONVENIR CON EL CLIENTE", disabled=True)
+            
+            # --- CORREGIDO: Uso de `key` para vincular estado ---
+            st.selectbox("Forma de Pago", ["Transferencia bancaria (pago anticipado)", "50% anticipado - 50% contraentrega", "Contraentrega"], key="forma_pago", index=0, help=None)
+            c3.selectbox("Vigencia", [f"{i} DÍAS HÁBILES" for i in range(1, 8)], key="vigencia", index=4, help=None)
 
             st.subheader("Datos del Cliente")
             cl1, cl2 = st.columns(2)
-            st.session_state.cliente_nombre = cl1.text_input("Cliente:", value=st.session_state.cliente_nombre)
-            st.session_state.cliente_nit = cl1.text_input("NIT/CC:", value=st.session_state.cliente_nit)
-            st.session_state.cliente_ciudad = cl1.text_input("Ciudad (Destino):", value=st.session_state.cliente_ciudad)
-            st.session_state.cliente_tel = cl2.text_input("Teléfono:", value=st.session_state.cliente_tel)
-            st.session_state.cliente_email = cl2.text_input("Correo:", value=st.session_state.cliente_email)
-            st.session_state.cliente_dir = cl2.text_input("Dirección:", value=st.session_state.cliente_dir)
+            cl1.text_input("Cliente:", key="cliente_nombre")
+            cl1.text_input("NIT/CC:", key="cliente_nit")
+            cl1.text_input("Ciudad (Destino):", key="cliente_ciudad")
+            cl2.text_input("Teléfono:", key="cliente_tel")
+            cl2.text_input("Correo:", key="cliente_email")
+            cl2.text_input("Dirección:", key="cliente_dir")
 
             st.divider()
             st.header("Paso 3: Añadir Productos")
             form_cols = st.columns([2, 1, 1])
-            sku_input = form_cols[0].text_input("Introduce el SKU del producto:")
-            qty_input = form_cols[1].number_input("Cantidad", min_value=1, value=1, step=1)
+            sku_input = form_cols[0].text_input("Introduce el SKU del producto:", key="sku_input")
+            qty_input = form_cols[1].number_input("Cantidad", min_value=1, value=1, step=1, key="qty_input")
             if form_cols[2].button("➕ Añadir Producto", type="primary", use_container_width=True):
-                if sku_input:
-                    product = st.session_state.products_df[st.session_state.products_df['sku'] == sku_input]
+                if st.session_state.sku_input:
+                    product = st.session_state.products_df[st.session_state.products_df['sku'] == st.session_state.sku_input]
                     if not product.empty:
                         data = product.iloc[0]
                         sku = data['sku']
                         if sku in st.session_state.quote_items:
-                            st.session_state.quote_items[sku]['cantidad'] += qty_input
+                            st.session_state.quote_items[sku]['cantidad'] += st.session_state.qty_input
                         else:
-                            st.session_state.quote_items[sku] = {'imagen_url': data['imagen_url'], 'nombre': data['nombre'], 'sku': sku, 'cantidad': qty_input, 'precio_unitario': data['precio_iva_incluido']}
+                            st.session_state.quote_items[sku] = {'imagen_url': data['imagen_url'], 'nombre': data['nombre'], 'sku': sku, 'cantidad': st.session_state.qty_input, 'precio_unitario': data['precio_iva_incluido']}
                         item = st.session_state.quote_items[sku]
                         item['valor_total'] = item['precio_unitario'] * item['cantidad']
                         st.rerun()
-                    else: st.error(f"❌ SKU '{sku_input}' no encontrado.")
+                    else: st.error(f"❌ SKU '{st.session_state.sku_input}' no encontrado.")
                 else: st.warning("⚠️ Introduce un SKU.")
             
             st.divider()
@@ -555,7 +571,6 @@ else:
             if not st.session_state.quote_items:
                 st.info("Aún no has añadido productos.")
             else:
-                # UI de la tabla de productos
                 cols = st.columns([1.2, 4, 1, 1, 2, 2, 1])
                 headers = ["Imagen", "Producto", "SKU", "Unds.", "Vlr. Unit.", "Vlr. Total", ""]
                 for col, header in zip(cols, headers):
@@ -587,20 +602,18 @@ else:
                 
                 action_cols = st.columns(2)
                 
-                # Botón de Guardar
                 is_new_quote = not st.session_state.current_quote_id
                 save_button_label = "💾 Guardar como Nueva" if is_new_quote else "💾 Guardar Cambios"
                 if action_cols[0].button(save_button_label, use_container_width=True, type="primary"):
                     if not st.session_state.cliente_nombre:
                         st.warning("Por favor, introduce al menos el nombre del cliente.")
                     else:
-                        quote_data_to_save = {key: st.session_state[key] for key in st.session_state if key != 'products_df'}
+                        quote_data_to_save = {key: st.session_state[key] for key in st.session_state if key not in ['products_df', 'tienda_selector']}
                         if save_quote(db, quote_data_to_save, st.session_state.current_quote_id):
                             if is_new_quote:
                                 clear_form_state()
                                 st.rerun()
 
-                # Botón de Generar PDF
                 pdf_data_dict = {
                     'fecha': st.session_state.fecha.strftime("%d/%m/%Y"),
                     'numero_cotizacion': st.session_state.numero_cotizacion or "N/A",
@@ -679,12 +692,12 @@ else:
                                     'comentarios': row['Comentarios']
                                 }
                         except IndexError:
-                            continue # Ignorar filas nuevas que puedan aparecer en el editor
+                            continue
                     
                     if changes_to_update:
                         update_quotes_tracking(db, changes_to_update)
                         st.cache_data.clear()
-                        if 'original_df' in st.session_state:
+                        if 'original_f' in st.session_state:
                             del st.session_state.original_df
                         st.rerun()
                     else:
