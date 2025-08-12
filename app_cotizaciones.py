@@ -370,7 +370,6 @@ def generate_pdf_content(quote_data):
     total_label_x = 100
     totals_y_start = pdf.get_y() + 5 
     pdf.set_font(pdf.current_font_family, "", 10)
-    # --- CORREGIDO ---
     pdf.set_text_color(*pdf.color_text)
     pdf.set_xy(total_label_x, totals_y_start)
     pdf.cell(70, 8, "SUBTOTAL", 0, 0, 'R')
@@ -387,12 +386,10 @@ def generate_pdf_content(quote_data):
     pdf.set_font(pdf.current_font_family, "B", 10)
     pdf.cell(30, 8, str(quote_data['total_unidades']), 0, 1, 'R')
     pdf.set_x(total_label_x)
-    # --- CORREGIDO ---
     pdf.set_draw_color(*pdf.color_border)
     pdf.line(total_label_x + 5, pdf.get_y(), 200, pdf.get_y())
     pdf.ln(2)
     pdf.set_font(pdf.current_font_family, "B", 11)
-    # --- CORREGIDO ---
     pdf.set_text_color(*pdf.color_primary)
     pdf.set_x(total_label_x)
     pdf.cell(70, 10, "TOTAL COTIZACION INCLUIDO IVA", 0, 0, 'R')
@@ -418,6 +415,7 @@ def clear_form_state():
     current_tienda = st.session_state.tienda_seleccionada
     products_df = st.session_state.get('products_df')
     
+    # Reiniciar todas las claves a sus valores por defecto
     form_keys_to_reset = [
         'quote_items', 'current_quote_id', 'cliente_nombre', 'cliente_nit', 
         'cliente_ciudad', 'cliente_tel', 'cliente_email', 'cliente_dir',
@@ -617,7 +615,23 @@ else:
                     if not st.session_state.cliente_nombre:
                         st.warning("Por favor, introduce al menos el nombre del cliente.")
                     else:
-                        quote_data_to_save = {key: st.session_state[key] for key in st.session_state if key not in ['products_df', 'tienda_selector']}
+                        # --- CORREGIDO: Construcción explícita del diccionario a guardar ---
+                        quote_data_to_save = {
+                            'tienda': st.session_state.tienda_seleccionada,
+                            'fecha': st.session_state.fecha.strftime("%d/%m/%Y"),
+                            'cliente_nombre': st.session_state.cliente_nombre,
+                            'cliente_nit': st.session_state.cliente_nit,
+                            'cliente_ciudad': st.session_state.cliente_ciudad,
+                            'cliente_tel': st.session_state.cliente_tel,
+                            'cliente_email': st.session_state.cliente_email,
+                            'cliente_dir': st.session_state.cliente_dir,
+                            'forma_pago': st.session_state.forma_pago,
+                            'vigencia': st.session_state.vigencia,
+                            'items': st.session_state.quote_items,
+                            'numero_cotizacion': st.session_state.numero_cotizacion,
+                            'estado': st.session_state.estado,
+                            'comentarios': st.session_state.comentarios,
+                        }
                         if save_quote(db, quote_data_to_save, st.session_state.current_quote_id):
                             if is_new_quote:
                                 clear_form_state()
