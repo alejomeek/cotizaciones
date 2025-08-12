@@ -229,7 +229,6 @@ class PDF(FPDF):
         self.cell(0, 10, f"Página {self.page_no()}", 0, 0, 'C')
 
 # --- FUNCIONES DE FIREBASE ---
-# --- CORREGIDO ---
 @firestore.transactional
 def get_next_quote_number_transaction(transaction, counter_ref, tienda_key):
     """Transacción segura que crea el contador si no existe."""
@@ -237,11 +236,9 @@ def get_next_quote_number_transaction(transaction, counter_ref, tienda_key):
     data = snapshot.to_dict() or {}
     current_number = data.get(tienda_key, 0)
     new_number = current_number + 1
-    # Usar set con merge=True para crear o actualizar el campo de la tienda
     transaction.set(counter_ref, {tienda_key: new_number}, merge=True)
     return new_number
 
-# --- CORREGIDO ---
 def get_next_quote_number(db, tienda):
     """Obtiene el siguiente número de cotización para una tienda de forma robusta."""
     if not db: return None
@@ -535,10 +532,10 @@ else:
             st.header("Paso 2: Información General")
             c1, c2, c3 = st.columns(3)
             c1.date_input("Fecha", value=datetime.now(), disabled=True, key="fecha")
+            # --- CORREGIDO: Layout de columnas ---
             c2.text_input("Ciudad (Origen)", "BOGOTA D.C", disabled=True)
             c2.text_input("Entrega", "A CONVENIR CON EL CLIENTE", disabled=True)
-            
-            st.selectbox("Forma de Pago", ["Transferencia bancaria (pago anticipado)", "50% anticipado - 50% contraentrega", "Contraentrega"], key="forma_pago")
+            c2.selectbox("Forma de Pago", ["Transferencia bancaria (pago anticipado)", "50% anticipado - 50% contraentrega", "Contraentrega"], key="forma_pago")
             c3.selectbox("Vigencia", [f"{i} DÍAS HÁBILES" for i in range(1, 8)], key="vigencia")
 
             st.subheader("Datos del Cliente")
@@ -684,7 +681,11 @@ else:
                     df,
                     column_config={
                         "id": None,
-                        "Total": st.column_config.NumberColumn("Total", format="$ %d"),
+                        # --- CORREGIDO: Columnas deshabilitadas ---
+                        "N° Cotización": st.column_config.TextColumn(disabled=True),
+                        "Fecha": st.column_config.TextColumn(disabled=True),
+                        "Cliente": st.column_config.TextColumn(disabled=True),
+                        "Total": st.column_config.NumberColumn("Total", format="$ %d", disabled=True),
                         "Estado": st.column_config.SelectboxColumn(
                             "Estado",
                             options=["🔵 Creada", "✉️ Enviada", "✅ Aprobada", "❌ Rechazada", "🧾 Facturada"],
