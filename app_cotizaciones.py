@@ -405,7 +405,8 @@ def init_session_state():
         'cliente_nombre': "", 'cliente_nit': "", 'cliente_ciudad': "",
         'cliente_tel': "", 'cliente_email': "", 'cliente_dir': "",
         'forma_pago': "Transferencia bancaria (pago anticipado)", 'vigencia': "5 DÍAS HÁBILES",
-        'numero_cotizacion': None, 'estado': None, 'comentarios': None
+        'numero_cotizacion': None, 'estado': None, 'comentarios': None,
+        'fecha': datetime.now()
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -497,7 +498,11 @@ else:
                             
                             st.session_state.current_quote_id = quote_id_to_load
                             for key, value in quote_data.items():
-                                st.session_state[key] = value
+                                # --- CORREGIDO: Conversión de fecha al cargar ---
+                                if key == 'fecha' and isinstance(value, str):
+                                    st.session_state.fecha = datetime.strptime(value, "%d/%m/%Y")
+                                else:
+                                    st.session_state[key] = value
                             
                             st.success(f"Cotización '{st.session_state.numero_cotizacion}' cargada.")
                             st.rerun()
@@ -529,7 +534,7 @@ else:
 
             st.header("Paso 2: Información General")
             c1, c2, c3 = st.columns(3)
-            c1.date_input("Fecha", value=datetime.now(), disabled=True, key="fecha")
+            c1.date_input("Fecha", key="fecha", disabled=True)
             c1.text_input("Ciudad (Origen)", "BOGOTA D.C", disabled=True)
             c2.text_input("Entrega", "A CONVENIR CON EL CLIENTE", disabled=True)
             c2.selectbox("Forma de Pago", ["Transferencia bancaria (pago anticipado)", "50% anticipado - 50% contraentrega", "Contraentrega"], key="forma_pago")
