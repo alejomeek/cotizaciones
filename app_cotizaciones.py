@@ -10,6 +10,7 @@ from firebase_admin import credentials, firestore, exceptions
 import os
 import json
 from google.cloud.exceptions import NotFound
+import base64 # --- NUEVO: Para manejar imágenes subidas ---
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
@@ -194,11 +195,19 @@ class PDF(FPDF):
         self.cell(col_widths['price'], row_height, "", 'B', 0, 'R', fill)
         self.cell(col_widths['total'], row_height, "", 'B', 1, 'R', fill)
 
+        # --- MODIFICADO: Lógica para manejar imágenes de URL o Base64 ---
         try:
-            response = requests.get(item['imagen_url'], timeout=5)
-            if response.status_code == 200:
-                img_bytes = BytesIO(response.content)
-                self.image(img_bytes, x=x_start + 2, y=y_start + 2, w=col_widths['img'] - 4, h=row_height - 4)
+            image_source = None
+            if item.get('imagen_base64'):
+                image_bytes = base64.b64decode(item['imagen_base64'])
+                image_source = BytesIO(image_bytes)
+            elif item.get('imagen_url'):
+                response = requests.get(item['imagen_url'], timeout=5)
+                if response.status_code == 200:
+                    image_source = BytesIO(response.content)
+            
+            if image_source:
+                self.image(image_source, x=x_start + 2, y=y_start + 2, w=col_widths['img'] - 4, h=row_height - 4)
         except Exception:
             v_offset_placeholder = (row_height - 4) / 2
             self.set_xy(x_start, y_start + v_offset_placeholder)
@@ -272,7 +281,6 @@ def save_quote(db, quote_data, quote_id=None):
         return None
     try:
         if quote_id:
-            # --- CORREGIDO: Usar update() en lugar de set(merge=True) ---
             db.collection('cotizaciones').document(quote_id).update(quote_data)
             st.success(f"¡Cotización '{quote_data.get('numero_cotizacion', '')}' actualizada!")
         else:
@@ -407,7 +415,8 @@ def init_session_state():
         'cliente_tel': "", 'cliente_email': "", 'cliente_dir': "",
         'forma_pago': "Transferencia bancaria (pago anticipado)", 'vigencia': "5 DÍAS HÁBILES",
         'numero_cotizacion': None, 'estado': None, 'comentarios': None,
-        'fecha': datetime.now()
+        'fecha': datetime.now(),
+        'manual_product_count': 0 # --- NUEVO: Contador para SKUs manuales únicos
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -581,6 +590,40 @@ else:
                     else: st.error(f"❌ SKU '{st.session_state.sku_input}' no encontrado.")
                 else: st.warning("⚠️ Introduce un SKU.")
             
+            # --- NUEVO: Formulario para añadir producto manual ---
+            with st.expander("👇 O añadir un producto manualmente"):
+                with st.form("manual_product_form", clear_on_submit=True):
+                    manual_name = st.text_input("Nombre del Producto")
+                    manual_sku = st.text_input("Código/SKU (ej: VARIOS-01)")
+                    manual_price = st.number_input("Valor Unitario", min_value=0, step=100)
+                    manual_qty = st.number_input("Cantidad", min_value=1, value=1, step=1)
+                    manual_image = st.file_uploader("Subir Imagen (Opcional)", type=['png', 'jpg', 'jpeg'])
+                    
+                    submitted = st.form_submit_button("Añadir Producto Manualmente")
+                    if submitted:
+                        if not all([manual_name, manual_sku, manual_price, manual_qty]):
+                            st.warning("Por favor, completa todos los campos del producto manual.")
+                        else:
+                            st.session_state.manual_product_count += 1
+                            unique_sku = f"manual_{st.session_state.manual_product_count}"
+                            
+                            image_base64 = None
+                            if manual_image is not None:
+                                image_bytes = manual_image.getvalue()
+                                image_base64 = base64.b64encode(image_bytes).decode()
+
+                            st.session_state.quote_items[unique_sku] = {
+                                'nombre': manual_name,
+                                'sku': manual_sku,
+                                'cantidad': manual_qty,
+                                'precio_unitario': manual_price,
+                                'valor_total': manual_price * manual_qty,
+                                'imagen_base64': image_base64,
+                                'imagen_url': None # Asegurarse de que no haya URL
+                            }
+                            st.success(f"Producto '{manual_name}' añadido.")
+                            st.rerun()
+
             st.divider()
             st.header("Paso 4: Cotización Actual")
             if not st.session_state.quote_items:
@@ -593,7 +636,15 @@ else:
                 
                 for sku, item in list(st.session_state.quote_items.items()):
                     cols = st.columns([1.2, 4, 1, 1, 2, 2, 1])
-                    cols[0].image(item['imagen_url'], width=70)
+                    # --- MODIFICADO: Lógica para mostrar imagen de URL o Base64 ---
+                    if item.get('imagen_base64'):
+                        img_bytes = base64.b64decode(item['imagen_base64'])
+                        cols[0].image(img_bytes, width=70)
+                    elif item.get('imagen_url'):
+                        cols[0].image(item['imagen_url'], width=70)
+                    else:
+                        cols[0].markdown("S/I")
+
                     cols[1].write(item['nombre'])
                     cols[2].write(item['sku'])
                     cols[3].write(str(item['cantidad']))
