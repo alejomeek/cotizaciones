@@ -94,7 +94,7 @@ class PDF(FPDF):
             # Si estamos en una página que contiene la tabla de productos,
             # nos aseguramos de que el encabezado de la tabla se vuelva a dibujar.
             # Esto se activa automáticamente en cada nueva página.
-            self.set_y(110) # Posición fija para el inicio de la tabla en cada página
+            self.set_y(40) # Posición fija para el inicio de la tabla en cada página
             self.draw_table_header(self.table_col_widths)
 
     def draw_quote_number(self, quote_number):
@@ -370,6 +370,12 @@ def generate_pdf_content(quote_data):
     pdf = PDF('P', 'mm', 'A4')
     pdf.set_auto_page_break(auto=True, margin=15) # Habilitar salto de página automático
     pdf.add_page()
+    
+    # --- DIBUJAR CONTENIDO DE LA PRIMERA PÁGINA ---
+    pdf.set_font(pdf.current_font_family, "B", 22)
+    pdf.set_text_color(*pdf.color_primary)
+    pdf.set_y(45)
+    pdf.cell(130, 10, "COTIZACIÓN", 0, 0, 'L')
     pdf.draw_quote_number(quote_data.get("numero_cotizacion", "S/N"))
     pdf.draw_client_info(quote_data)
     
