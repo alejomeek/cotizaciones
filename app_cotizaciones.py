@@ -10,7 +10,7 @@ from firebase_admin import credentials, firestore, exceptions
 import os
 import json
 from google.cloud.exceptions import NotFound
-import base64 # --- NUEVO: Para manejar imágenes subidas ---
+import base64
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
@@ -45,7 +45,7 @@ def init_firebase():
 
 db = init_firebase()
 
-# --- CLASE PDF PERSONALIZADA ---
+# --- CLASE PDF PERSONALIZADA (CORREGIDA) ---
 class PDF(FPDF):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -53,8 +53,12 @@ class PDF(FPDF):
         self.color_secondary = (240, 240, 240)
         self.color_text = (50, 50, 50)
         self.color_border = (220, 220, 220)
+        # --- NUEVO: Atributos para manejar el encabezado de la tabla en cada página ---
+        self.table_col_widths = None
+        self.is_table_page = False
 
     def header(self):
+        """Dibuja el encabezado principal de la página y, si es necesario, el de la tabla."""
         try:
             self.add_font('Lato', '', 'Lato-Regular.ttf', uni=True)
             self.add_font('Lato', 'B', 'Lato-Bold.ttf', uni=True)
@@ -85,11 +89,14 @@ class PDF(FPDF):
         self.set_x(info_x)
         self.cell(0, 5, "Avenida 19 # 114A - 22, Bogota", 0, 1, 'R')
 
-        self.set_y(45)
-        self.set_font(self.current_font_family, "B", 22)
-        self.set_text_color(*self.color_primary)
-        self.cell(130, 10, "COTIZACIÓN", 0, 0, 'L')
-        
+        # --- CORREGIDO: Lógica para redibujar el encabezado de la tabla en páginas nuevas ---
+        if self.is_table_page:
+            # Si estamos en una página que contiene la tabla de productos,
+            # nos aseguramos de que el encabezado de la tabla se vuelva a dibujar.
+            # Esto se activa automáticamente en cada nueva página.
+            self.set_y(110) # Posición fija para el inicio de la tabla en cada página
+            self.draw_table_header(self.table_col_widths)
+
     def draw_quote_number(self, quote_number):
         self.set_y(50)
         self.set_x(-50)
@@ -171,17 +178,15 @@ class PDF(FPDF):
         self.cell(col_widths['total'], 8, "VALOR TOTAL", 'T', 1, 'C', 1)
 
     def draw_table_row(self, item, col_widths, fill=False):
+        # --- CORREGIDO: Se elimina el chequeo manual de salto de página ---
+        # FPDF lo manejará automáticamente gracias al nuevo `header`.
+        x_start = self.get_x()
+        y_start = self.get_y()
+
         line_height = 5
         num_lines = self.get_multicell_lines(item['nombre'], col_widths['name'] - 2)
         name_height = num_lines * line_height
         row_height = max(30, name_height + 4)
-
-        if self.get_y() + row_height > 270:
-            self.add_page()
-            self.draw_table_header(col_widths)
-
-        x_start = self.get_x()
-        y_start = self.get_y()
 
         self.set_font(self.current_font_family, "", 9)
         self.set_text_color(*self.color_text)
@@ -195,7 +200,6 @@ class PDF(FPDF):
         self.cell(col_widths['price'], row_height, "", 'B', 0, 'R', fill)
         self.cell(col_widths['total'], row_height, "", 'B', 1, 'R', fill)
 
-        # --- MODIFICADO: Lógica para manejar imágenes de URL o Base64 ---
         try:
             image_source = None
             if item.get('imagen_base64'):
@@ -364,17 +368,26 @@ def remove_item(sku):
 
 def generate_pdf_content(quote_data):
     pdf = PDF('P', 'mm', 'A4')
-    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_auto_page_break(auto=True, margin=15) # Habilitar salto de página automático
     pdf.add_page()
     pdf.draw_quote_number(quote_data.get("numero_cotizacion", "S/N"))
     pdf.draw_client_info(quote_data)
-    pdf.ln(5)
+    
     col_widths = {'img': 30, 'name': 70, 'sku': 20, 'qty': 15, 'price': 25, 'total': 30}
-    pdf.draw_table_header(col_widths)
+    
+    # --- CORREGIDO: Activar el modo tabla y guardar anchos de columna ---
+    pdf.is_table_page = True
+    pdf.table_col_widths = col_widths
+    
+    pdf.draw_table_header(col_widths) # Dibujar el primer encabezado
+    
     fill = True
     for item in quote_data['items'].values():
         pdf.draw_table_row(item, col_widths, fill)
         fill = not fill
+    
+    pdf.is_table_page = False # Desactivar el modo tabla al final
+
     if pdf.get_y() > 225: pdf.add_page()
     total_label_x = 100
     totals_y_start = pdf.get_y() + 5 
@@ -416,7 +429,7 @@ def init_session_state():
         'forma_pago': "Transferencia bancaria (pago anticipado)", 'vigencia': "5 DÍAS HÁBILES",
         'numero_cotizacion': None, 'estado': None, 'comentarios': None,
         'fecha': datetime.now(),
-        'manual_product_count': 0 # --- NUEVO: Contador para SKUs manuales únicos
+        'manual_product_count': 0
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -590,7 +603,6 @@ else:
                     else: st.error(f"❌ SKU '{st.session_state.sku_input}' no encontrado.")
                 else: st.warning("⚠️ Introduce un SKU.")
             
-            # --- NUEVO: Formulario para añadir producto manual ---
             with st.expander("👇 O añadir un producto manualmente"):
                 with st.form("manual_product_form", clear_on_submit=True):
                     manual_name = st.text_input("Nombre del Producto")
@@ -619,7 +631,7 @@ else:
                                 'precio_unitario': manual_price,
                                 'valor_total': manual_price * manual_qty,
                                 'imagen_base64': image_base64,
-                                'imagen_url': None # Asegurarse de que no haya URL
+                                'imagen_url': None
                             }
                             st.success(f"Producto '{manual_name}' añadido.")
                             st.rerun()
@@ -636,7 +648,6 @@ else:
                 
                 for sku, item in list(st.session_state.quote_items.items()):
                     cols = st.columns([1.2, 4, 1, 1, 2, 2, 1])
-                    # --- MODIFICADO: Lógica para mostrar imagen de URL o Base64 ---
                     if item.get('imagen_base64'):
                         img_bytes = base64.b64decode(item['imagen_base64'])
                         cols[0].image(img_bytes, width=70)
@@ -786,3 +797,4 @@ else:
                         st.rerun()
                     else:
                         st.toast("No se detectaron cambios para guardar.")
+
