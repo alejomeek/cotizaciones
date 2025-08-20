@@ -120,35 +120,31 @@ class PDF(FPDF):
         if self.is_table_page and self.table_col_widths:
             self.set_y(40)  # altura fija donde inicia la tabla
             self.draw_table_header(self.table_col_widths)
-    # Reemplaza tu método draw_quote_number por este.
-    # Cambios clave:
-    # 1) La línea azul ahora SOLO cubre el ancho del título (10 → 140),
-    #    y no atraviesa el bloque derecho del "Cotización N°".
-    # 2) Ajuste sutil de Y para que el número quede por encima de la línea.
+    def draw_quote_number(self, numero):
+        self.set_font(self.current_font_family, '', 11)
+        self.set_text_color(50, 50, 50)
+        # Posicionar el label a la derecha
+        self.set_xy(150, 55)
+        self.cell(35, 6, "Cotización N°:", 0, 0, 'R')
 
-    def draw_quote_number(self, quote_number):
-        # Bloque del número a la derecha (un poco más arriba para despegarlo de la línea)
-        self.set_y(48)  # antes: 50
-        self.set_x(-60)  # ancho del bloque a la derecha
+        # Guardar la posición inicial del número
+        x_numero = self.get_x()
+        y_numero = self.get_y()
 
-        self.set_font(self.current_font_family, "B", 12)
-        self.set_text_color(*self.color_text)
-        self.cell(0, 5, "Cotización N°:", 0, 1, 'R')
+        # Número de la cotización justo al lado
+        self.set_font(self.current_font_family, 'B', 12)
+        self.set_text_color(4, 76, 125)
+        self.cell(25, 6, numero, 0, 1, 'L')
 
-        self.set_font(self.current_font_family, "B", 16)
-        self.set_text_color(*self.color_primary)
-        self.set_x(-60)
-        self.cell(0, 10, quote_number, 0, 1, 'R')
+        # Línea divisoria: desde la izquierda hasta justo debajo del número
+        self.set_draw_color(4, 76, 125)
+        self.set_line_width(0.6)
+        y_line = y_numero + 10  # trazamos la línea un poco más abajo que el texto del número
+        self.line(10, y_line, 200, y_line)
 
-        # Línea azul: solo bajo el título (no cruza el bloque derecho)
-        self.set_line_width(0.5)
-        self.set_draw_color(*self.color_primary)
-        y_line = 64  # antes: 60; la bajamos un poco para evitar cualquier solape
-        self.line(10, y_line, 140, y_line)  # antes: (10, y, 200, y)
-        self.ln(5)
+        # Espacio hacia abajo
+        self.ln(12)
 
-    # Si prefieres mantener la Y original (50/60), basta con acortar la línea:
-    # self.line(10, 60, 140, 60)
 
 
     def draw_client_info(self, data):
