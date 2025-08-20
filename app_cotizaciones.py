@@ -53,18 +53,21 @@ class PDF(FPDF):
         self.color_secondary = (240, 240, 240)
         self.color_text = (50, 50, 50)
         self.color_border = (220, 220, 220)
-        # --- NUEVO: Atributos para manejar el encabezado de la tabla en cada página ---
         self.table_col_widths = None
         self.is_table_page = False
+        self.current_font_family = 'Arial' # Font por defecto
 
     def header(self):
         """Dibuja el encabezado principal de la página y, si es necesario, el de la tabla."""
         try:
-            self.add_font('Lato', '', 'Lato-Regular.ttf', uni=True)
-            self.add_font('Lato', 'B', 'Lato-Bold.ttf', uni=True)
-            self.add_font('Lato', 'I', 'Lato-Italic.ttf', uni=True)
+            if not hasattr(self, 'fonts_added'):
+                self.add_font('Lato', '', 'Lato-Regular.ttf', uni=True)
+                self.add_font('Lato', 'B', 'Lato-Bold.ttf', uni=True)
+                self.add_font('Lato', 'I', 'Lato-Italic.ttf', uni=True)
+                self.fonts_added = True
             self.current_font_family = 'Lato'
         except RuntimeError:
+            # Si las fuentes no se pueden cargar, se usa Arial
             self.current_font_family = 'Arial'
 
         try:
@@ -89,12 +92,8 @@ class PDF(FPDF):
         self.set_x(info_x)
         self.cell(0, 5, "Avenida 19 # 114A - 22, Bogota", 0, 1, 'R')
 
-        # --- CORREGIDO: Lógica para redibujar el encabezado de la tabla en páginas nuevas ---
-        if self.is_table_page:
-            # Si estamos en una página que contiene la tabla de productos,
-            # nos aseguramos de que el encabezado de la tabla se vuelva a dibujar.
-            # Esto se activa automáticamente en cada nueva página.
-            self.set_y(40) # Posición fija para el inicio de la tabla en cada página
+        if self.is_table_page and self.page_no() > 1:
+            self.set_y(40) 
             self.draw_table_header(self.table_col_widths)
 
     def draw_quote_number(self, quote_number):
@@ -107,7 +106,6 @@ class PDF(FPDF):
         self.set_text_color(*self.color_primary)
         self.set_x(-50)
         self.cell(0, 10, quote_number, 0, 1, 'R')
-
         self.set_y(60)
         self.set_line_width(0.5)
         self.set_draw_color(*self.color_primary)
@@ -170,35 +168,29 @@ class PDF(FPDF):
         self.set_text_color(255, 255, 255)
         self.set_draw_color(*self.color_primary)
         self.set_line_width(0.3)
-        self.cell(col_widths['img'], 8, "IMAGEN", 'T', 0, 'C', 1)
-        self.cell(col_widths['name'], 8, "PRODUCTO", 'T', 0, 'C', 1)
-        self.cell(col_widths['sku'], 8, "CÓDIGO", 'T', 0, 'C', 1)
-        self.cell(col_widths['qty'], 8, "UNDS.", 'T', 0, 'C', 1)
-        self.cell(col_widths['price'], 8, "VLR. UNITARIO", 'T', 0, 'C', 1)
-        self.cell(col_widths['total'], 8, "VALOR TOTAL", 'T', 1, 'C', 1)
+        self.cell(col_widths['img'], 8, "IMAGEN", 1, 0, 'C', 1)
+        self.cell(col_widths['name'], 8, "PRODUCTO", 1, 0, 'C', 1)
+        self.cell(col_widths['sku'], 8, "CÓDIGO", 1, 0, 'C', 1)
+        self.cell(col_widths['qty'], 8, "UNDS.", 1, 0, 'C', 1)
+        self.cell(col_widths['price'], 8, "VLR. UNITARIO", 1, 0, 'C', 1)
+        self.cell(col_widths['total'], 8, "VALOR TOTAL", 1, 1, 'C', 1)
 
     def draw_table_row(self, item, col_widths, fill=False):
-        # --- CORREGIDO: Se elimina el chequeo manual de salto de página ---
-        # FPDF lo manejará automáticamente gracias al nuevo `header`.
-        x_start = self.get_x()
-        y_start = self.get_y()
-
         line_height = 5
         num_lines = self.get_multicell_lines(item['nombre'], col_widths['name'] - 2)
         name_height = num_lines * line_height
         row_height = max(30, name_height + 4)
 
-        self.set_font(self.current_font_family, "", 9)
-        self.set_text_color(*self.color_text)
+        if self.get_y() + row_height > self.page_break_trigger:
+            self.add_page()
+
+        x_start = self.get_x()
+        y_start = self.get_y()
+
+        self.set_fill_color(*self.color_secondary if fill else (255, 255, 255))
         self.set_draw_color(*self.color_border)
-        self.set_fill_color(*self.color_secondary)
-        
-        self.cell(col_widths['img'], row_height, "", 'B', 0, 'C', fill)
-        self.cell(col_widths['name'], row_height, "", 'B', 0, 'C', fill)
-        self.cell(col_widths['sku'], row_height, "", 'B', 0, 'C', fill)
-        self.cell(col_widths['qty'], row_height, "", 'B', 0, 'C', fill)
-        self.cell(col_widths['price'], row_height, "", 'B', 0, 'R', fill)
-        self.cell(col_widths['total'], row_height, "", 'B', 1, 'R', fill)
+        self.multi_cell(sum(col_widths.values()), row_height, "", border='B', align='L', fill=True)
+        self.set_y(y_start)
 
         try:
             image_source = None
@@ -217,20 +209,21 @@ class PDF(FPDF):
             self.set_xy(x_start, y_start + v_offset_placeholder)
             self.cell(col_widths['img'], 4, "S/I", 0, 0, 'C')
 
+        self.set_font(self.current_font_family, "", 9)
+        self.set_text_color(*self.color_text)
         name_v_offset = (row_height - name_height) / 2
         self.set_xy(x_start + col_widths['img'], y_start + name_v_offset)
         self.multi_cell(col_widths['name'], line_height, item['nombre'], border=0, align='C')
-        
+
         text_height = self.font_size
         cell_v_offset = (row_height - text_height) / 2
-        
-        self.set_xy(x_start + col_widths['img'] + col_widths['name'], y_start + cell_v_offset)
+        self.set_y(y_start + cell_v_offset)
+
+        current_x = x_start + col_widths['img'] + col_widths['name']
+        self.set_x(current_x)
         self.cell(col_widths['sku'], text_height, item['sku'], 0, 0, 'C')
-        self.set_x(x_start + col_widths['img'] + col_widths['name'] + col_widths['sku'])
         self.cell(col_widths['qty'], text_height, str(item['cantidad']), 0, 0, 'C')
-        self.set_x(x_start + col_widths['img'] + col_widths['name'] + col_widths['sku'] + col_widths['qty'])
         self.cell(col_widths['price'], text_height, format_currency(item['precio_unitario']), 0, 0, 'R')
-        self.set_x(x_start + col_widths['img'] + col_widths['name'] + col_widths['sku'] + col_widths['qty'] + col_widths['price'])
         self.cell(col_widths['total'], text_height, format_currency(item['valor_total']), 0, 0, 'R')
         
         self.set_y(y_start + row_height)
@@ -244,7 +237,6 @@ class PDF(FPDF):
 # --- FUNCIONES DE FIREBASE ---
 @firestore.transactional
 def get_next_quote_number_transaction(transaction, counter_ref, tienda_key):
-    """Transacción segura que crea el contador si no existe."""
     snapshot = counter_ref.get(transaction=transaction)
     data = snapshot.to_dict() or {}
     current_number = data.get(tienda_key, 0)
@@ -253,7 +245,6 @@ def get_next_quote_number_transaction(transaction, counter_ref, tienda_key):
     return new_number
 
 def get_next_quote_number(db, tienda):
-    """Obtiene el siguiente número de cotización para una tienda de forma robusta."""
     if not db: return None
     tienda_key = tienda.lower()
     counter_ref = db.collection('counters').document('cotizaciones')
@@ -368,10 +359,9 @@ def remove_item(sku):
 
 def generate_pdf_content(quote_data):
     pdf = PDF('P', 'mm', 'A4')
-    pdf.set_auto_page_break(auto=True, margin=15) # Habilitar salto de página automático
+    pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
     
-    # --- DIBUJAR CONTENIDO DE LA PRIMERA PÁGINA ---
     pdf.set_font(pdf.current_font_family, "B", 22)
     pdf.set_text_color(*pdf.color_primary)
     pdf.set_y(45)
@@ -381,18 +371,17 @@ def generate_pdf_content(quote_data):
     
     col_widths = {'img': 30, 'name': 70, 'sku': 20, 'qty': 15, 'price': 25, 'total': 30}
     
-    # --- CORREGIDO: Activar el modo tabla y guardar anchos de columna ---
     pdf.is_table_page = True
     pdf.table_col_widths = col_widths
     
-    pdf.draw_table_header(col_widths) # Dibujar el primer encabezado
+    pdf.draw_table_header(col_widths)
     
     fill = True
     for item in quote_data['items'].values():
         pdf.draw_table_row(item, col_widths, fill)
         fill = not fill
     
-    pdf.is_table_page = False # Desactivar el modo tabla al final
+    pdf.is_table_page = False
 
     if pdf.get_y() > 225: pdf.add_page()
     total_label_x = 100
@@ -425,9 +414,8 @@ def generate_pdf_content(quote_data):
     pdf.cell(30, 10, format_currency(quote_data['total_cotizacion']), 0, 1, 'R')
     return bytes(pdf.output())
 
-# --- INICIALIZACIÓN Y GESTIÓN DEL ESTADO DE SESIÓN ---
+# --- GESTIÓN DEL ESTADO DE SESIÓN ---
 def init_session_state():
-    """Inicializa todas las claves necesarias en el estado de la sesión si no existen."""
     defaults = {
         'tienda_seleccionada': None, 'quote_items': {}, 'current_quote_id': None,
         'cliente_nombre': "", 'cliente_nit': "", 'cliente_ciudad': "",
@@ -441,7 +429,6 @@ def init_session_state():
         st.session_state.setdefault(key, value)
 
 def clear_form_state():
-    """Limpia solo el estado del formulario de creación, preservando la tienda y el catálogo."""
     current_tienda = st.session_state.tienda_seleccionada
     products_df = st.session_state.get('products_df')
     
@@ -450,7 +437,8 @@ def clear_form_state():
     
     init_session_state()
     st.session_state.tienda_seleccionada = current_tienda
-    st.session_state.products_df = products_df
+    if products_df is not None:
+        st.session_state.products_df = products_df
     st.success("Formulario limpiado. Listo para una nueva cotización.")
 
 init_session_state()
@@ -469,7 +457,8 @@ with st.sidebar:
         
         init_session_state()
         st.session_state.tienda_seleccionada = new_store
-        st.session_state.products_df = products_df
+        if products_df is not None:
+            st.session_state.products_df = products_df
 
     if 'tienda_seleccionada' not in st.session_state or st.session_state.tienda_seleccionada is None:
         st.session_state.tienda_seleccionada = tiendas[0]
@@ -496,7 +485,6 @@ if not st.session_state.tienda_seleccionada:
 else:
     tab1, tab2 = st.tabs(["📝 Crear Cotización", "📊 Seguimiento de Cotizaciones"])
 
-    # --- PESTAÑA DE CREAR COTIZACIÓN ---
     with tab1:
         with st.sidebar:
             st.divider()
@@ -512,39 +500,57 @@ else:
                 if quotes_dict:
                     selected_quote_label = st.selectbox(
                         "Cargar Cotización Existente",
-                        options=list(quotes_dict.keys()),
-                        index=None,
-                        placeholder="Selecciona una cotización...",
+                        options=[""] + list(quotes_dict.keys()),
+                        index=0,
+                        format_func=lambda x: "Selecciona una cotización..." if x == "" else x,
                         key="load_quote_sb"
                     )
 
+                    # ==================================================================
+                    # === BLOQUE DE CÓDIGO CORREGIDO ===
+                    # ==================================================================
                     if st.button("📥 Cargar Cotización", use_container_width=True):
                         if selected_quote_label:
                             quote_id_to_load = quotes_dict[selected_quote_label]
-                            quote_data = db.collection('cotizaciones').document(quote_id_to_load).get().to_dict()
+                            quote_doc = db.collection('cotizaciones').document(quote_id_to_load).get()
                             
-                            clear_form_state()
-                            
-                            st.session_state.current_quote_id = quote_id_to_load
-                            st.session_state.cliente_nombre = quote_data.get('cliente_nombre', '')
-                            st.session_state.cliente_nit = quote_data.get('cliente_nit', '')
-                            st.session_state.cliente_ciudad = quote_data.get('cliente_ciudad', '')
-                            st.session_state.cliente_tel = quote_data.get('cliente_tel', '')
-                            st.session_state.cliente_email = quote_data.get('cliente_email', '')
-                            st.session_state.cliente_dir = quote_data.get('cliente_dir', '')
-                            st.session_state.forma_pago = quote_data.get('forma_pago', "Transferencia bancaria (pago anticipado)")
-                            st.session_state.vigencia = quote_data.get('vigencia', "5 DÍAS HÁBILES")
-                            st.session_state.numero_cotizacion = quote_data.get('numero_cotizacion')
-                            st.session_state.estado = quote_data.get('estado')
-                            st.session_state.comentarios = quote_data.get('comentarios')
-                            st.session_state.quote_items = quote_data.get('items', {})
+                            if quote_doc.exists:
+                                quote_data = quote_doc.to_dict()
+                                
+                                # 1. Limpiar el estado del formulario actual, preservando tienda y catálogo
+                                clear_form_state()
+                                
+                                # 2. Asignar explícitamente cada valor al estado de la sesión
+                                st.session_state.current_quote_id = quote_id_to_load
+                                st.session_state.cliente_nombre = quote_data.get('cliente_nombre', '')
+                                st.session_state.cliente_nit = quote_data.get('cliente_nit', '')
+                                st.session_state.cliente_ciudad = quote_data.get('cliente_ciudad', '')
+                                st.session_state.cliente_tel = quote_data.get('cliente_tel', '')
+                                st.session_state.cliente_email = quote_data.get('cliente_email', '')
+                                st.session_state.cliente_dir = quote_data.get('cliente_dir', '')
+                                st.session_state.forma_pago = quote_data.get('forma_pago', "Transferencia bancaria (pago anticipado)")
+                                st.session_state.vigencia = quote_data.get('vigencia', "5 DÍAS HÁBILES")
+                                st.session_state.numero_cotizacion = quote_data.get('numero_cotizacion')
+                                st.session_state.estado = quote_data.get('estado')
+                                st.session_state.comentarios = quote_data.get('comentarios')
+                                
+                                # 3. CORRECCIÓN CLAVE: Mapear 'items' de Firestore a 'quote_items'
+                                st.session_state.quote_items = quote_data.get('items', {})
 
-                            fecha_str = quote_data.get('fecha')
-                            if fecha_str and isinstance(fecha_str, str):
-                                st.session_state.fecha = datetime.strptime(fecha_str, "%d/%m/%Y")
-                            
-                            st.success(f"Cotización '{st.session_state.numero_cotizacion}' cargada.")
-                            st.rerun()
+                                # 4. Manejar y convertir la fecha
+                                fecha_str = quote_data.get('fecha')
+                                if fecha_str and isinstance(fecha_str, str):
+                                    try:
+                                        st.session_state.fecha = datetime.strptime(fecha_str, "%d/%m/%Y")
+                                    except ValueError:
+                                        st.session_state.fecha = datetime.now() # Usar fecha actual si el formato es incorrecto
+                                else:
+                                    st.session_state.fecha = datetime.now()
+
+                                st.success(f"Cotización '{st.session_state.numero_cotizacion}' cargada.")
+                                st.rerun()
+                            else:
+                                st.error("No se pudo encontrar la cotización seleccionada.")
 
             st.divider()
             
@@ -742,7 +748,6 @@ else:
                     use_container_width=True
                 )
 
-    # --- PESTAÑA DE SEGUIMIENTO ---
     with tab2:
         st.header(f"Seguimiento de Cotizaciones - {st.session_state.tienda_seleccionada}")
 
