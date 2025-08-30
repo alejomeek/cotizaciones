@@ -47,8 +47,11 @@ db = init_firebase()
 
 # --- FUNCIONES AUXILIARES ---
 def format_currency(value):
-    if not isinstance(value, (int, float)): return "$0"
-    return f"${value:,.0f}".replace(",", ".")
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return "$0"
+    return f"${v:,.0f}".replace(",", ".")
 
 @st.cache_data
 def process_wix_csv(uploaded_file):
@@ -120,32 +123,25 @@ class PDF(FPDF):
         if self.is_table_page and self.table_col_widths:
             self.set_y(40)  # altura fija donde inicia la tabla
             self.draw_table_header(self.table_col_widths)
+
     def draw_quote_number(self, numero):
+        # Etiqueta y número a la derecha
         self.set_font(self.current_font_family, '', 11)
         self.set_text_color(50, 50, 50)
-        # Posicionar el label a la derecha
         self.set_xy(150, 55)
         self.cell(35, 6, "Cotización N°:", 0, 0, 'R')
 
-        # Guardar la posición inicial del número
-        x_numero = self.get_x()
-        y_numero = self.get_y()
-
-        # Número de la cotización justo al lado
+        y_numero = self.get_y()  # Y superior de la línea del número
         self.set_font(self.current_font_family, 'B', 12)
         self.set_text_color(4, 76, 125)
         self.cell(25, 6, numero, 0, 1, 'L')
 
-        # Línea divisoria: desde la izquierda hasta justo debajo del número
+        # Línea azul a la misma altura (un poco por debajo del número)
         self.set_draw_color(4, 76, 125)
         self.set_line_width(0.6)
-        y_line = y_numero + 10  # trazamos la línea un poco más abajo que el texto del número
+        y_line = y_numero + 10
         self.line(10, y_line, 200, y_line)
-
-        # Espacio hacia abajo
         self.ln(12)
-
-
 
     def draw_client_info(self, data):
         self.ln(5)
@@ -369,12 +365,14 @@ def get_all_quotes_for_tracking(db, tienda):
     for quote in quotes_ref:
         data = quote.to_dict()
         subtotal = sum(item.get('valor_total', 0) for item in data.get('items', {}).values())
+        # Incluir flete si existe en el doc
+        flete_val_doc = data.get('flete_val', 0)
         quotes_list.append({
             "id": quote.id,
             "N° Cotización": data.get("numero_cotizacion", "S/N"),
             "Fecha": data.get("fecha", "S/F"),
             "Cliente": data.get("cliente_nombre", "N/A"),
-            "Total": subtotal,
+            "Total": subtotal + (flete_val_doc or 0),
             "Estado": data.get("estado", "🔵 Creada"),
             "Comentarios": data.get("comentarios", "")
         })
@@ -420,8 +418,8 @@ def generate_pdf_content(quote_data):
     # Desactivar modo tabla
     pdf.is_table_page = False
 
-    # Reservar espacio para totales (aprox 45mm). Si no cabe, nueva página
-    needed = 45
+    # Reservar espacio para totales (aprox 55mm). Si no cabe, nueva página
+    needed = 55
     if pdf.get_y() + needed > pdf.page_break_trigger:
         pdf.add_page()
 
@@ -433,11 +431,15 @@ def generate_pdf_content(quote_data):
     pdf.cell(70, 8, "SUBTOTAL", 0, 0, 'R')
     pdf.set_font(pdf.current_font_family, "B", 10)
     pdf.cell(30, 8, format_currency(quote_data['subtotal']), 0, 1, 'R')
+
+    # Flete: muestra etiqueta y valor
     pdf.set_font(pdf.current_font_family, "", 10)
     pdf.set_x(total_label_x)
-    pdf.cell(70, 8, "FLETE", 0, 0, 'R')
+    flete_label = "FLETE (INCLUIDO)" if str(quote_data.get('flete_str','')).upper() == 'INCLUIDO' else "FLETE"
+    pdf.cell(70, 8, flete_label, 0, 0, 'R')
     pdf.set_font(pdf.current_font_family, "B", 10)
-    pdf.cell(30, 8, str(quote_data['flete_str']), 0, 1, 'R')
+    pdf.cell(30, 8, format_currency(quote_data.get('flete_val', 0)), 0, 1, 'R')
+
     pdf.set_font(pdf.current_font_family, "", 10)
     pdf.set_x(total_label_x)
     pdf.cell(70, 8, "TOTAL UNIDADES", 0, 0, 'R')
@@ -466,7 +468,8 @@ def init_session_state():
         'forma_pago': "Transferencia bancaria (pago anticipado)", 'vigencia': "5 DÍAS HÁBILES",
         'numero_cotizacion': None, 'estado': None, 'comentarios': None,
         'fecha': datetime.now(),
-        'manual_product_count': 0
+        'manual_product_count': 0,
+        'flete_val': 0  # NUEVO: valor de flete en la UI
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -569,6 +572,7 @@ else:
                             st.session_state.estado = quote_data.get('estado')
                             st.session_state.comentarios = quote_data.get('comentarios')
                             st.session_state.quote_items = quote_data.get('items', {})
+                            st.session_state.flete_val = quote_data.get('flete_val', 0)
 
                             fecha_str = quote_data.get('fecha')
                             if fecha_str and isinstance(fecha_str, str):
@@ -713,14 +717,29 @@ else:
                 st.subheader("Resumen y Acciones")
                 subtotal = sum(item['valor_total'] for item in st.session_state.quote_items.values())
                 total_unidades = sum(item['cantidad'] for item in st.session_state.quote_items.values())
-                costo_flete_str, costo_flete_val = ("INCLUIDO", 0) if subtotal >= 1_000_000 else ("A convenir", 0)
-                total_cotizacion = subtotal + costo_flete_val
+
+                # --- NUEVA LÓGICA DE FLETE ---
+                if subtotal >= 1_000_000:
+                    costo_flete_str = "INCLUIDO"
+                    st.session_state.flete_val = 0
+                else:
+                    costo_flete_str = "MANUAL"
+                    st.session_state.flete_val = st.number_input(
+                        "Flete (subtotal < $1.000.000)",
+                        min_value=0,
+                        step=1000,
+                        value=int(st.session_state.get('flete_val', 0)),
+                        help="Ingresa el valor del flete para esta cotización"
+                    )
+
+                total_cotizacion = subtotal + (st.session_state.flete_val or 0)
                 
-                t1, t2 = st.columns(2)
+                t1, t2, t3 = st.columns(3)
                 t1.metric("SUBTOTAL", format_currency(subtotal))
-                t1.metric("FLETE", costo_flete_str)
-                t2.metric("SUMA DE UNIDADES", str(total_unidades))
-                t2.metric("TOTAL COTIZACION", format_currency(total_cotizacion))
+                t2.metric("FLETE", ("INCLUIDO" if costo_flete_str == "INCLUIDO" else format_currency(st.session_state.flete_val)))
+                t3.metric("TOTAL COTIZACION", format_currency(total_cotizacion))
+
+                st.caption(f"Total de unidades: {total_unidades}")
                 
                 action_cols = st.columns(2)
                 
@@ -745,6 +764,7 @@ else:
                             'numero_cotizacion': st.session_state.numero_cotizacion,
                             'estado': st.session_state.estado,
                             'comentarios': st.session_state.comentarios,
+                            'flete_val': int(st.session_state.flete_val)
                         }
                         if save_quote(db, quote_data_to_save, st.session_state.current_quote_id):
                             if is_new_quote:
@@ -764,7 +784,8 @@ else:
                     'vigencia': st.session_state.vigencia,
                     'items': st.session_state.quote_items,
                     'subtotal': subtotal,
-                    'flete_str': costo_flete_str,
+                    'flete_str': ("INCLUIDO" if costo_flete_str == "INCLUIDO" else "MANUAL"),
+                    'flete_val': int(st.session_state.flete_val),
                     'total_unidades': total_unidades,
                     'total_cotizacion': total_cotizacion
                 }
