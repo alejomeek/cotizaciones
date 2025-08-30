@@ -53,6 +53,13 @@ def format_currency(value):
         return "$0"
     return f"${v:,.0f}".replace(",", ".")
 
+def parse_int_from_text(txt: str) -> int:
+    """Convierte un texto a entero ignorando separadores y caracteres no numéricos."""
+    if txt is None:
+        return 0
+    s = ''.join(ch for ch in str(txt) if ch.isdigit())
+    return int(s) if s else 0
+
 @st.cache_data
 def process_wix_csv(uploaded_file):
     try:
@@ -718,19 +725,19 @@ else:
                 subtotal = sum(item['valor_total'] for item in st.session_state.quote_items.values())
                 total_unidades = sum(item['cantidad'] for item in st.session_state.quote_items.values())
 
-                # --- NUEVA LÓGICA DE FLETE ---
+                # --- LÓGICA DE FLETE SIN SPINNERS ---
                 if subtotal >= 1_000_000:
                     costo_flete_str = "INCLUIDO"
                     st.session_state.flete_val = 0
                 else:
                     costo_flete_str = "MANUAL"
-                    st.session_state.flete_val = st.number_input(
-                        "Flete (subtotal < $1.000.000)",
-                        min_value=0,
-                        step=1000,
-                        value=int(st.session_state.get('flete_val', 0)),
-                        help="Ingresa el valor del flete para esta cotización"
+                    st.info("El subtotal es menor a $1.000.000. Ingresa el valor del flete para incluirlo en el total.")
+                    flete_text = st.text_input(
+                        "Flete",
+                        value=str(st.session_state.get('flete_val', 0)),
+                        help="Escribe solo números. Ej: 35000"
                     )
+                    st.session_state.flete_val = parse_int_from_text(flete_text)
 
                 total_cotizacion = subtotal + (st.session_state.flete_val or 0)
                 
