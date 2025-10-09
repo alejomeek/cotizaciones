@@ -725,19 +725,22 @@ else:
                 subtotal = sum(item['valor_total'] for item in st.session_state.quote_items.values())
                 total_unidades = sum(item['cantidad'] for item in st.session_state.quote_items.values())
 
-                # --- INICIO: SECCIÓN DE CÓDIGO MODIFICADA ---
-                st.subheader("Costo de Envío (Flete)")
+                # --- INICIO DEL CAMBIO: LÓGICA DE FLETE MANUAL ---
+                st.subheader("Costo del Flete")
                 
-                opcion_flete = st.radio(
-                    "Elige una opción para el flete:",
-                    ("Ingresar valor manualmente", "Flete Incluido en el precio"),
-                    key="flete_option",
+                flete_option = st.radio(
+                    "Selecciona una opción para el flete:",
+                    ("Flete Incluido en el Total", "Ingresar Valor Manual"),
+                    key="flete_option_selector",
                     horizontal=True
                 )
 
-                costo_flete_str = "" 
+                costo_flete_str = ""
 
-                if opcion_flete == "Ingresar valor manualmente":
+                if flete_option == "Flete Incluido en el Total":
+                    st.session_state.flete_val = 0
+                    costo_flete_str = "INCLUIDO"
+                else: # "Ingresar Valor Manual"
                     costo_flete_str = "MANUAL"
                     flete_text = st.text_input(
                         "Valor del Flete",
@@ -745,20 +748,17 @@ else:
                         help="Escribe solo números. Ej: 35000"
                     )
                     st.session_state.flete_val = parse_int_from_text(flete_text)
-                else:
-                    costo_flete_str = "INCLUIDO"
-                    st.session_state.flete_val = 0
                 
+                # --- FIN DEL CAMBIO ---
+
                 total_cotizacion = subtotal + (st.session_state.flete_val or 0)
                 
+                st.divider()
+
                 t1, t2, t3 = st.columns(3)
                 t1.metric("SUBTOTAL", format_currency(subtotal))
-                
-                flete_display_val = "INCLUIDO" if opcion_flete == "Flete Incluido en el precio" else format_currency(st.session_state.flete_val)
-                t2.metric("FLETE", flete_display_val)
-                
+                t2.metric("FLETE", ("INCLUIDO" if costo_flete_str == "INCLUIDO" else format_currency(st.session_state.flete_val)))
                 t3.metric("TOTAL COTIZACION", format_currency(total_cotizacion))
-                # --- FIN: SECCIÓN DE CÓDIGO MODIFICADA ---
 
                 st.caption(f"Total de unidades: {total_unidades}")
                 
@@ -805,7 +805,7 @@ else:
                     'vigencia': st.session_state.vigencia,
                     'items': st.session_state.quote_items,
                     'subtotal': subtotal,
-                    'flete_str': costo_flete_str,
+                    'flete_str': ("INCLUIDO" if costo_flete_str == "INCLUIDO" else "MANUAL"),
                     'flete_val': int(st.session_state.flete_val),
                     'total_unidades': total_unidades,
                     'total_cotizacion': total_cotizacion
