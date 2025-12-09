@@ -100,10 +100,10 @@ def process_wix_csv(uploaded_file):
         st.error(f"❌ Error al procesar CSV: {e}")
         return None
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600)  # Cache por 1 hora
 def fetch_wix_products():
     """
-    Obtiene todos los productos desde la API de Wix usando el endpoint de inventario.
+    Obtiene todos los productos desde la API de Wix.
     Retorna un DataFrame procesado similar al CSV.
     """
     if not WIX_CONFIG.get('api_key') or not WIX_CONFIG.get('site_id'):
@@ -111,43 +111,41 @@ def fetch_wix_products():
         return None
     
     try:
-        # Endpoint de inventario que devuelve todas las variantes
-        url = "https://www.wixapis.com/stores/v2/inventoryItems/query"
+        url = "https://www.wixapis.com/stores/v1/products/query"
         headers = {
             "Authorization": WIX_CONFIG['api_key'],
             "Content-Type": "application/json",
             "wix-site-id": WIX_CONFIG['site_id']
         }
         
-        all_items = []
-        cursor_paging = None
-        max_retries = 3
-        page_count = 0
-        
-        progress_bar = st.progress(0, text="Conectando con Wix Inventory...")
-        
-        while True:
-            page_count += 1
-            
-            # Construir payload con cursor paging
-            payload = {
-                "query": {
-                    "paging": {
-                        "limit": 100
-                    }
+        payload = {
+            "query": {
+                "paging": {
+                    "limit": 100,
+                    "offset": 0
                 }
             }
-            
-            if cursor_paging:
-                payload["query"]["cursorPaging"] = {"cursor": cursor_paging}
+        }
+        
+        all_products = []
+        offset = 0
+        max_retries = 3
+        
+        # Paginación para obtener todos los productos
+        progress_bar = st.progress(0, text="Conectando con Wix...")
+        
+        page_count = 0
+        while True:
+            page_count += 1
+            payload["query"]["paging"]["offset"] = offset
             
             # Sistema de reintentos
             success = False
             for attempt in range(max_retries):
                 try:
-                    progress_text = f"Obteniendo inventario... Página {page_count} (Total: {len(all_items)})"
+                    progress_text = f"Obteniendo productos... Página {page_count} (Total: {len(all_products)})"
                     progress_bar.progress(
-                        min(len(all_items) / 8500, 0.99),
+                        min(len(all_products) / 8500, 0.99),  # Estimación basada en tus 8029 productos
                         text=progress_text
                     )
                     
@@ -172,7 +170,7 @@ def fetch_wix_products():
                     elif response.status_code == 429:
                         wait_time = 2 ** attempt
                         progress_bar.progress(
-                            min(len(all_items) / 8500, 0.99),
+                            min(len(all_products) / 8500, 0.99),
                             text=f"Límite de solicitudes. Esperando {wait_time}s..."
                         )
                         import time
@@ -180,10 +178,9 @@ def fetch_wix_products():
                         continue
                     else:
                         if attempt == max_retries - 1:
-                            # Si falla el inventario, intentar con productos normales
                             progress_bar.empty()
-                            st.warning(f"⚠️ El endpoint de inventario falló (Error {response.status_code}). Intentando con productos estándar...")
-                            return fetch_wix_products_standard()
+                            st.error(f"❌ Error {response.status_code}: {response.text}")
+                            return None
                         import time
                         time.sleep(2)
                         continue
@@ -191,7 +188,7 @@ def fetch_wix_products():
                 except requests.exceptions.Timeout:
                     if attempt < max_retries - 1:
                         progress_bar.progress(
-                            min(len(all_items) / 8500, 0.99),
+                            min(len(all_products) / 8500, 0.99),
                             text=f"Timeout. Reintentando ({attempt + 1}/{max_retries})..."
                         )
                         import time
@@ -199,11 +196,15 @@ def fetch_wix_products():
                         continue
                     else:
                         progress_bar.empty()
-                        st.error("❌ Timeout al conectar con Wix.")
+                        st.error("❌ Timeout al conectar con Wix. Intenta nuevamente.")
                         return None
                         
                 except requests.exceptions.ConnectionError:
                     if attempt < max_retries - 1:
+                        progress_bar.progress(
+                            min(len(all_products) / 8500, 0.99),
+                            text=f"Error de conexión. Reintentando ({attempt + 1}/{max_retries})..."
+                        )
                         import time
                         time.sleep(3)
                         continue
@@ -213,8 +214,11 @@ def fetch_wix_products():
                         return None
             
             if not success:
+                progress_bar.empty()
+                st.error(f"❌ No se pudo obtener la página {page_count}")
                 break
             
+            # Procesar respuesta exitosa
             try:
                 data = response.json()
             except ValueError:
@@ -222,47 +226,50 @@ def fetch_wix_products():
                 st.error("❌ Respuesta inválida de Wix API")
                 return None
             
-            items = data.get("inventoryItems", [])
+            products = data.get("products", [])
             
-            st.write(f"DEBUG - Página {page_count}: Recibidos {len(items)} items. Total acumulado: {len(all_items) + len(items)}")
+            # Debug: mostrar info de la respuesta
+            st.write(f"DEBUG - Página {page_count}: Recibidos {len(products)} productos. Total acumulado: {len(all_products) + len(products)}")
             
-            if not items:
+            if not products:
+                st.info(f"ℹ️ No hay más productos. Se obtuvieron {page_count} páginas.")
                 break
             
-            all_items.extend(items)
+            all_products.extend(products)
             
-            # Obtener cursor para siguiente página
-            paging_metadata = data.get("pagingMetadata", {})
-            cursor_paging = paging_metadata.get("cursors", {}).get("next")
-            
-            # Si no hay más páginas
-            if not cursor_paging:
-                st.info(f"✅ Última página alcanzada. Total: {len(all_items)} items en {page_count} páginas.")
+            # IMPORTANTE: La condición correcta para continuar
+            # Continuar mientras se reciban exactamente 100 productos
+            if len(products) < 100:
+                st.info(f"✅ Última página alcanzada. Total: {len(all_products)} productos en {page_count} páginas.")
                 break
             
-            # Seguridad
-            if page_count > 200:
-                st.warning(f"⚠️ Límite de páginas alcanzado. Items obtenidos: {len(all_items)}")
+            offset += 100
+            
+            # Seguridad: evitar loops infinitos (máximo 100 páginas = 10,000 productos)
+            if page_count > 100:
+                st.warning(f"⚠️ Se alcanzó el límite de páginas. Productos obtenidos: {len(all_products)}")
                 break
         
-        progress_bar.progress(1.0, text=f"✅ {len(all_items)} items obtenidos")
+        progress_bar.progress(1.0, text=f"✅ {len(all_products)} productos obtenidos")
         import time
         time.sleep(1)
         progress_bar.empty()
         
-        if not all_items:
-            st.warning("No se encontraron items en el inventario.")
+        if not all_products:
+            st.warning("No se encontraron productos en Wix.")
             return None
         
-        st.success(f"🎉 Total de items de inventario obtenidos: {len(all_items)}")
+        st.success(f"🎉 Total de productos crudos obtenidos de Wix: {len(all_products)}")
         
-        # Ahora necesitamos obtener los detalles de productos para cada item
-        df_processed = process_wix_inventory_items(all_items)
+        df_processed = process_wix_api_products(all_products)
         
         st.info(f"📊 Productos procesados y listos para usar: {len(df_processed)}")
         
         return df_processed
         
+    except requests.exceptions.RequestException as e:
+        st.error(f"❌ Error de conexión con Wix API: {e}")
+        return None
     except Exception as e:
         st.error(f"❌ Error inesperado: {e}")
         import traceback
@@ -270,92 +277,32 @@ def fetch_wix_products():
         return None
 
 
-def fetch_wix_products_standard():
-    """
-    Fallback: usa el endpoint estándar de productos y expande variantes manualmente.
-    """
-    # Aquí va tu función anterior como fallback
-    st.info("Usando método estándar de productos...")
-    # ... código anterior ...
-    pass
-
-
-def process_wix_inventory_items(items: list) -> pd.DataFrame:
-    """
-    Procesa items del inventario de Wix al formato esperado.
-    """
-    processed_products = []
-    
-    for item in items:
-        # Obtener SKU y producto info
-        sku = item.get("sku", "")
-        if not sku:
-            continue
-        
-        product_id = item.get("productId", "")
-        variant_id = item.get("variantId", "")
-        
-        # Información básica del item
-        name = item.get("productName", "Sin nombre")
-        
-        # Si tiene variant info, agregar opciones al nombre
-        if item.get("variants"):
-            variant_info = " - ".join([f"{v.get('value', '')}" for v in item.get("variants", [])])
-            if variant_info:
-                name = f"{name} - {variant_info}"
-        
-        # Precio (si está disponible)
-        price = 0
-        if item.get("priceData"):
-            price = item.get("priceData", {}).get("price", 0)
-        
-        # Imagen (placeholder por ahora, necesitaremos hacer otra llamada para imágenes)
-        image_url = "https://placehold.co/100x100/EEE/333?text=S/I"
-        
-        # Inventario
-        inventory = 0
-        if item.get("trackQuantity"):
-            inventory = item.get("quantity", 0)
-        
-        # Visible (disponible)
-        visible = item.get("visible", True)
-        
-        if visible:
-            processed_products.append({
-                "sku": sku,
-                "nombre": name,
-                "precio_iva_incluido": price,
-                "imagen_url": image_url,
-                "inventory": inventory
-            })
-    
-    df = pd.DataFrame(processed_products)
-    
-    if df.empty:
-        return df
-    
-    df.dropna(subset=['sku', 'nombre'], inplace=True)
-    df['inventory'] = pd.to_numeric(df['inventory'], errors='coerce').fillna(0).astype(int)
-    df['precio_iva_incluido'] = pd.to_numeric(df['precio_iva_incluido'], errors='coerce').fillna(0)
-    
-    return df[['sku', 'nombre', 'precio_iva_incluido', 'imagen_url', 'inventory']]
-
-
 def process_wix_api_products(products: list) -> pd.DataFrame:
     """
     Convierte la respuesta de la API de Wix al formato del DataFrame esperado.
+    EXPANDE todas las variantes de cada producto.
     """
     processed_products = []
     
     for product in products:
+        # Verificar visibilidad del producto padre
+        if not product.get("visible", True):
+            continue
+            
         # Manejo de variantes
         if product.get("manageVariants") and product.get("variants"):
+            # EXPANDIR TODAS LAS VARIANTES
             for variant_data in product["variants"]:
                 variant = variant_data.get("variant", {})
                 sku = variant.get("sku", "")
                 
-                if not sku or not variant.get("visible", True):
+                # Cambiar esta condición - antes filtraba demasiado
+                if not sku:
                     continue
+                
+                # NO FILTRAR POR VISIBLE en variantes individuales
+                # if not variant.get("visible", True):
+                #     continue
                 
                 price_data = variant.get("priceData", {})
                 price = price_data.get("price", 0)
@@ -387,9 +334,10 @@ def process_wix_api_products(products: list) -> pd.DataFrame:
                     "inventory": inventory
                 })
         else:
+            # Producto simple sin variantes
             sku = product.get("sku", "")
             
-            if not sku or not product.get("visible", True):
+            if not sku:
                 continue
             
             price_data = product.get("priceData", {})
