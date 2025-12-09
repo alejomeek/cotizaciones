@@ -265,12 +265,18 @@ def fetch_wix_products():
         while True:
             page_count += 1
             
-            # Construir payload - SIN FILTRO DE INVENTARIO para obtener todos
+            # Construir payload - incluir productos con y sin tracking
             payload = {
                 "query": {
                     "paging": {
                         "limit": limit,
                         "offset": offset
+                    },
+                    "filter": {
+                        "$or": [
+                            {"stock.trackInventory": True},
+                            {"stock.trackInventory": False}
+                        ]
                     }
                 }
             }
