@@ -240,6 +240,12 @@ def fetch_wix_products():
         st.warning("⚠️ Configuración de Wix API no disponible. Usa el método manual CSV.")
         return None
     
+    # Inicializar lista de debug en session_state
+    if 'wix_debug_log' not in st.session_state:
+        st.session_state.wix_debug_log = []
+    
+    st.session_state.wix_debug_log = []  # Limpiar log anterior
+    
     try:
         url = "https://www.wixapis.com/stores/v1/products/query"
         headers = {
@@ -356,63 +362,66 @@ def fetch_wix_products():
                 st.error("❌ Respuesta inválida de Wix API")
                 return None
             
-            # DEBUG: Ver estructura completa de la respuesta
-            if page_count == 1:
-                st.write("### 🔍 DEBUG - Estructura de respuesta (primera página):")
-                st.json(data)
+            # GUARDAR DEBUG EN SESSION STATE
+            if page_count <= 2:  # Solo primeras 2 páginas
+                st.session_state.wix_debug_log.append({
+                    'page': page_count,
+                    'response_keys': list(data.keys()),
+                    'products_count': len(data.get("products", [])),
+                    'full_response': data
+                })
             
             products = data.get("products", [])
             
-            # Debug: mostrar info de la respuesta
-            st.write(f"DEBUG - Página {page_count}: Recibidos {len(products)} productos. Total acumulado: {len(all_products) + len(products)}")
+            log_msg = f"Página {page_count}: Recibidos {len(products)} productos. Total: {len(all_products) + len(products)}"
+            st.session_state.wix_debug_log.append({'msg': log_msg})
             
             if not products:
-                st.info(f"ℹ️ No hay más productos. Se obtuvieron {page_count} páginas.")
+                st.session_state.wix_debug_log.append({'msg': f"No hay más productos en página {page_count}"})
                 break
             
             all_products.extend(products)
-            
-            # DEBUG: Mostrar estructura de paginación
-            st.write(f"**Claves en la respuesta:** {list(data.keys())}")
             
             # Intentar diferentes formas de obtener el cursor
             next_cursor = None
             
             # Opción 1: pagingMetadata.cursors.next
             if "pagingMetadata" in data:
-                st.write(f"**pagingMetadata encontrado:** {data['pagingMetadata']}")
                 paging_metadata = data.get("pagingMetadata", {})
                 cursors = paging_metadata.get("cursors", {})
                 next_cursor = cursors.get("next")
-                st.write(f"**Cursor siguiente (Opción 1):** {next_cursor}")
+                st.session_state.wix_debug_log.append({
+                    'msg': f"Página {page_count} - pagingMetadata: {paging_metadata}",
+                    'cursor_found': bool(next_cursor)
+                })
             
-            # Opción 2: metadata.cursors.next (alternativa)
+            # Opción 2: metadata.cursors.next
             if not next_cursor and "metadata" in data:
-                st.write(f"**metadata encontrado:** {data['metadata']}")
                 metadata = data.get("metadata", {})
                 cursors = metadata.get("cursors", {})
                 next_cursor = cursors.get("next")
-                st.write(f"**Cursor siguiente (Opción 2):** {next_cursor}")
+                st.session_state.wix_debug_log.append({
+                    'msg': f"Página {page_count} - metadata: {metadata}",
+                    'cursor_found': bool(next_cursor)
+                })
             
-            # Opción 3: cursors directamente en data
-            if not next_cursor and "cursors" in data:
-                st.write(f"**cursors encontrado directamente:** {data['cursors']}")
-                cursors = data.get("cursors", {})
-                next_cursor = cursors.get("next")
-                st.write(f"**Cursor siguiente (Opción 3):** {next_cursor}")
-            
-            # Si no hay cursor siguiente, hemos terminado
+            # Si no hay cursor siguiente, terminamos
             if not next_cursor:
-                st.warning(f"⚠️ No se encontró cursor 'next'. Terminando en página {page_count}.")
-                st.info(f"✅ Total obtenido: {len(all_products)} productos en {page_count} páginas.")
+                st.session_state.wix_debug_log.append({
+                    'msg': f"⚠️ No cursor 'next' encontrado. Terminando en página {page_count}"
+                })
                 break
             
             cursor = next_cursor
-            st.success(f"✅ Cursor para página {page_count + 1}: {cursor[:50]}...")
+            st.session_state.wix_debug_log.append({
+                'msg': f"✅ Cursor para página {page_count + 1}: {cursor[:50]}..."
+            })
             
-            # Seguridad: evitar loops infinitos
+            # Seguridad
             if page_count > 100:
-                st.warning(f"⚠️ Se alcanzó el límite de páginas. Productos obtenidos: {len(all_products)}")
+                st.session_state.wix_debug_log.append({
+                    'msg': f"Límite de 100 páginas alcanzado"
+                })
                 break
         
         progress_bar.progress(1.0, text=f"✅ {len(all_products)} productos obtenidos")
@@ -423,19 +432,17 @@ def fetch_wix_products():
             st.warning("No se encontraron productos en Wix.")
             return None
         
-        st.success(f"🎉 Total de productos crudos obtenidos de Wix: {len(all_products)}")
-        
         df_processed = process_wix_api_products(all_products)
-        
-        st.info(f"📊 Productos procesados y listos para usar: {len(df_processed)}")
         
         return df_processed
         
     except requests.exceptions.RequestException as e:
         st.error(f"❌ Error de conexión con Wix API: {e}")
+        st.session_state.wix_debug_log.append({'error': str(e)})
         return None
     except Exception as e:
         st.error(f"❌ Error inesperado: {e}")
+        st.session_state.wix_debug_log.append({'error': str(e)})
         import traceback
         st.code(traceback.format_exc())
         return None
@@ -1105,6 +1112,25 @@ else:
                     st.session_state.products_df = fetch_wix_products()
                     if st.session_state.products_df is not None:
                         st.rerun()
+                # MOSTRAR DEBUG LOG (PERSISTE)
+            if 'wix_debug_log' in st.session_state and st.session_state.wix_debug_log:
+                with st.expander("🔍 Ver Debug Log de Wix API", expanded=False):
+                    for entry in st.session_state.wix_debug_log:
+                        if 'msg' in entry:
+                            st.write(entry['msg'])
+                        elif 'page' in entry:
+                            st.write(f"### Página {entry['page']}")
+                            st.write(f"**Claves en respuesta:** {entry['response_keys']}")
+                            st.write(f"**Productos en página:** {entry['products_count']}")
+                            with st.expander(f"Ver JSON completo página {entry['page']}"):
+                                st.json(entry['full_response'])
+                        elif 'error' in entry:
+                            st.error(entry['error'])
+                        elif 'cursor_found' in entry:
+                            if entry['cursor_found']:
+                                st.success(entry['msg'])
+                            else:
+                                st.warning(entry['msg'])
 
         else:  # Método manual CSV
             uploaded_file = st.file_uploader(
