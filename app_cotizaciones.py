@@ -26,6 +26,7 @@ def init_firebase():
     try:
         if 'firebase_secrets' in st.secrets:
             creds_dict = dict(st.secrets["firebase_secrets"])
+            # Asegurar formato correcto de la clave privada
             creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
         elif os.path.exists("firebase_secrets.json"):
             with open("firebase_secrets.json", "r") as f:
@@ -45,6 +46,114 @@ def init_firebase():
 
 db = init_firebase()
 
+# --- FUNCIONES DE WIX API ---
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_and_process_wix_data():
+    """Descarga TODOS los productos de Wix (paginados) usando Secrets."""
+    
+    # Verificar si existen los secrets
+    if 'wix_api' not in st.secrets:
+        st.error("❌ No se encontraron las credenciales de Wix en st.secrets.")
+        return None
+
+    api_key = st.secrets["wix_api"]["api_key"]
+    site_id = st.secrets["wix_api"]["site_id"]
+    url = "https://www.wixapis.com/stores/v1/products/query"
+
+    headers = {
+        'Authorization': api_key,
+        'wix-site-id': site_id,
+        'Content-Type': 'application/json'
+    }
+    
+    products = []
+    offset = 0
+    limit = 100
+    total_leidos = 0
+    
+    progress_text = "Conectando con Wix..."
+    my_bar = st.progress(0, text=progress_text)
+
+    try:
+        while True:
+            payload = {
+                "includeHiddenProducts": True, 
+                "query": {
+                    "paging": {
+                        "limit": limit,
+                        "offset": offset
+                    }
+                }
+            }
+            
+            response = requests.post(url, headers=headers, json=payload, timeout=20)
+            
+            if response.status_code != 200:
+                st.error(f"Error comunicando con Wix: {response.status_code} - {response.text}")
+                break
+                
+            data = response.json()
+            items = data.get('products', [])
+            total_results = data.get('totalResults', 0)
+            
+            if not items:
+                break
+                
+            for p in items:
+                sku = p.get('sku', '')
+                name = p.get('name', 'Sin Nombre')
+                
+                # Obtener precio estándar
+                price = p.get('price', {}).get('price', 0)
+                
+                # Inventario
+                stock_info = p.get('stock', {})
+                inventory = stock_info.get('quantity', 0)
+                # Si es un producto "In Stock" pero sin tracking numérico, asumimos stock alto
+                if inventory is None and stock_info.get('inStock', False):
+                    inventory = 999 
+                
+                # Imagen
+                image_url = "https://placehold.co/100x100/EEE/333?text=S/I"
+                media = p.get('media', {})
+                if media and media.get('mainMedia'):
+                    full_url = media['mainMedia'].get('image', {}).get('url', '')
+                    if full_url:
+                        image_url = full_url
+
+                products.append({
+                    'sku': str(sku),
+                    'nombre': name,
+                    'precio_iva_incluido': float(price),
+                    'imagen_url': image_url,
+                    'inventory': int(inventory or 0)
+                })
+
+            total_leidos += len(items)
+            
+            if total_results > 0:
+                percent = min(total_leidos / total_results, 1.0)
+                my_bar.progress(percent, text=f"Descargando productos: {total_leidos} de {total_results}")
+
+            if len(items) < limit:
+                break 
+            
+            offset += limit
+            
+        my_bar.empty()
+        
+        if not products:
+            return None
+
+        df = pd.DataFrame(products)
+        df.dropna(subset=['sku', 'nombre'], inplace=True)
+        return df
+
+    except Exception as e:
+        st.error(f"Error crítico descargando datos: {str(e)}")
+        my_bar.empty()
+        return None
+
 # --- FUNCIONES AUXILIARES ---
 def format_currency(value):
     try:
@@ -54,34 +163,16 @@ def format_currency(value):
     return f"${v:,.0f}".replace(",", ".")
 
 def parse_int_from_text(txt: str) -> int:
-    """Convierte un texto a entero ignorando separadores y caracteres no numéricos."""
     if txt is None:
         return 0
     s = ''.join(ch for ch in str(txt) if ch.isdigit())
     return int(s) if s else 0
 
-@st.cache_data
-def process_wix_csv(uploaded_file):
-    try:
-        df = pd.read_csv(uploaded_file, delimiter=',', dtype={'sku': str}, engine='python')
-        df_processed = df[['sku', 'name', 'price', 'productImageUrl', 'inventory']].copy()
-        df_processed.dropna(subset=['sku', 'name'], inplace=True)
-        df_processed['inventory'] = pd.to_numeric(df_processed['inventory'], errors='coerce').fillna(0).astype(int)
-        def get_main_image_url(url_str):
-            if not isinstance(url_str, str) or url_str == "": return "https://placehold.co/100x100/EEE/333?text=S/I"
-            return f"https://static.wixstatic.com/media/{url_str.split(';')[0]}"
-        df_processed['imagen_url'] = df_processed['productImageUrl'].apply(get_main_image_url)
-        df_processed.rename(columns={'name': 'nombre', 'price': 'precio_iva_incluido'}, inplace=True)
-        return df_processed[['sku', 'nombre', 'precio_iva_incluido', 'imagen_url', 'inventory']]
-    except Exception as e:
-        st.error(f"❌ Error al procesar CSV: {e}")
-        return None
-
 def remove_item(sku):
     if sku in st.session_state.quote_items:
         del st.session_state.quote_items[sku]
 
-# --- CLASE PDF PERSONALIZADA (CORREGIDA) ---
+# --- CLASE PDF PERSONALIZADA ---
 class PDF(FPDF):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -89,13 +180,11 @@ class PDF(FPDF):
         self.color_secondary = (240, 240, 240)
         self.color_text = (50, 50, 50)
         self.color_border = (220, 220, 220)
-        # Atributos para manejar el encabezado de la tabla en cada página
         self.table_col_widths = None
         self.is_table_page = False
         self.current_font_family = 'Arial'
 
     def header(self):
-        """Dibuja el encabezado y, si corresponde, el de la tabla."""
         try:
             self.add_font('Lato', '', 'Lato-Regular.ttf', uni=True)
             self.add_font('Lato', 'B', 'Lato-Bold.ttf', uni=True)
@@ -126,24 +215,21 @@ class PDF(FPDF):
         self.set_x(info_x)
         self.cell(0, 5, "Avenida 19 # 114A - 22, Bogota", 0, 1, 'R')
 
-        # Redibujar encabezado de tabla en páginas nuevas si estamos en modo tabla
         if self.is_table_page and self.table_col_widths:
-            self.set_y(40)  # altura fija donde inicia la tabla
+            self.set_y(40)
             self.draw_table_header(self.table_col_widths)
 
     def draw_quote_number(self, numero):
-        # Etiqueta y número a la derecha
         self.set_font(self.current_font_family, '', 11)
         self.set_text_color(50, 50, 50)
         self.set_xy(150, 55)
         self.cell(35, 6, "Cotización N°:", 0, 0, 'R')
 
-        y_numero = self.get_y()  # Y superior de la línea del número
+        y_numero = self.get_y()
         self.set_font(self.current_font_family, 'B', 12)
         self.set_text_color(4, 76, 125)
         self.cell(25, 6, numero, 0, 1, 'L')
 
-        # Línea azul a la misma altura (un poco por debajo del número)
         self.set_draw_color(4, 76, 125)
         self.set_line_width(0.6)
         y_line = y_numero + 10
@@ -214,7 +300,6 @@ class PDF(FPDF):
         self.cell(col_widths['total'], 8, "VALOR TOTAL", 'T', 1, 'C', 1)
 
     def ensure_row_fits(self, row_height):
-        """Si la fila no cabe en la página, crea una nueva y reimprime encabezado."""
         if self.get_y() + row_height > self.page_break_trigger:
             self.add_page()
             if self.is_table_page and self.table_col_widths:
@@ -222,16 +307,13 @@ class PDF(FPDF):
                 self.draw_table_header(self.table_col_widths)
 
     def draw_table_row(self, item, col_widths, fill=False):
-        # 1) Calcular altura necesaria de la fila
         line_height = 5
         num_lines = self.get_multicell_lines(item.get('nombre', ''), col_widths['name'] - 2)
         name_height = num_lines * line_height
         row_height = max(30, name_height + 4)
 
-        # 2) Pre-chequear el salto de página ANTES de trazar
         self.ensure_row_fits(row_height)
 
-        # 3) Trazar la fila completa sabiendo que cabe
         x_start = self.get_x()
         y_start = self.get_y()
 
@@ -240,7 +322,6 @@ class PDF(FPDF):
         self.set_draw_color(*self.color_border)
         self.set_fill_color(*self.color_secondary)
 
-        # Marcos de las celdas
         self.cell(col_widths['img'], row_height, "", 'B', 0, 'C', fill)
         self.cell(col_widths['name'], row_height, "", 'B', 0, 'C', fill)
         self.cell(col_widths['sku'], row_height, "", 'B', 0, 'C', fill)
@@ -254,36 +335,48 @@ class PDF(FPDF):
             if item.get('imagen_base64'):
                 image_bytes = base64.b64decode(item['imagen_base64'])
                 image_source = BytesIO(image_bytes)
-            elif item.get('imagen_url'):
-                response = requests.get(item['imagen_url'], timeout=5)
+            elif item.get('imagen_url') and "placehold.co" not in item.get('imagen_url'):
+                # Añadimos header para simular navegador si es necesario, 
+                # aunque Wix suele servir imágenes estáticas sin problemas
+                headers_img = {'User-Agent': 'Mozilla/5.0'}
+                response = requests.get(item['imagen_url'], headers=headers_img, timeout=5)
                 if response.status_code == 200:
                     image_source = BytesIO(response.content)
+            
             if image_source:
-                self.image(image_source, x=x_start + 2, y=y_start + 2,
-                           w=col_widths['img'] - 4, h=row_height - 4)
+                # Ajuste de imagen para mantener proporción
+                self.image(image_source, x=x_start + 2, y=y_start + 2, w=col_widths['img'] - 4, h=row_height - 4)
+            else:
+                raise Exception("No image")
         except Exception:
             v_offset_placeholder = (row_height - 4) / 2
             self.set_xy(x_start, y_start + v_offset_placeholder)
             self.cell(col_widths['img'], 4, "S/I", 0, 0, 'C')
 
-        # Nombre (centrado vertical)
+        # Nombre
         name_v_offset = (row_height - name_height) / 2
         self.set_xy(x_start + col_widths['img'], y_start + name_v_offset)
         self.multi_cell(col_widths['name'], line_height, str(item.get('nombre', '')), border=0, align='C')
 
-        # Otras columnas
         text_height = self.font_size
         cell_v_offset = (row_height - text_height) / 2
+        
+        # SKU
         self.set_xy(x_start + col_widths['img'] + col_widths['name'], y_start + cell_v_offset)
         self.cell(col_widths['sku'], text_height, str(item.get('sku', '')), 0, 0, 'C')
+        
+        # Cantidad
         self.set_x(x_start + col_widths['img'] + col_widths['name'] + col_widths['sku'])
         self.cell(col_widths['qty'], text_height, str(item.get('cantidad', '')), 0, 0, 'C')
+        
+        # Precio
         self.set_x(x_start + col_widths['img'] + col_widths['name'] + col_widths['sku'] + col_widths['qty'])
         self.cell(col_widths['price'], text_height, format_currency(item.get('precio_unitario', 0)), 0, 0, 'R')
+        
+        # Total
         self.set_x(x_start + col_widths['img'] + col_widths['name'] + col_widths['sku'] + col_widths['qty'] + col_widths['price'])
         self.cell(col_widths['total'], text_height, format_currency(item.get('valor_total', 0)), 0, 0, 'R')
 
-        # Avanzar a siguiente renglón
         self.set_y(y_start + row_height)
 
     def footer(self):
@@ -292,10 +385,9 @@ class PDF(FPDF):
         self.set_text_color(150, 150, 150)
         self.cell(0, 10, f"Página {self.page_no()}", 0, 0, 'C')
 
-# --- FUNCIONES DE FIREBASE ---
+# --- FUNCIONES DE FIREBASE (DB) ---
 @firestore.transactional
 def get_next_quote_number_transaction(transaction, counter_ref, tienda_key):
-    """Transacción segura que crea el contador si no existe."""
     snapshot = counter_ref.get(transaction=transaction)
     data = snapshot.to_dict() or {}
     current_number = data.get(tienda_key, 0)
@@ -304,7 +396,6 @@ def get_next_quote_number_transaction(transaction, counter_ref, tienda_key):
     return new_number
 
 def get_next_quote_number(db, tienda):
-    """Obtiene el siguiente número de cotización para una tienda de forma robusta."""
     if not db: return None
     tienda_key = tienda.lower()
     counter_ref = db.collection('counters').document('cotizaciones')
@@ -364,7 +455,6 @@ def delete_quote(db, quote_id):
     except Exception as e:
         st.error(f"Error al eliminar la cotización: {e}")
 
-
 def get_all_quotes_for_tracking(db, tienda):
     if not db or not tienda: return []
     quotes_ref = db.collection('cotizaciones').where('tienda', '==', tienda).stream()
@@ -372,7 +462,6 @@ def get_all_quotes_for_tracking(db, tienda):
     for quote in quotes_ref:
         data = quote.to_dict()
         subtotal = sum(item.get('valor_total', 0) for item in data.get('items', {}).values())
-        # Incluir flete si existe en el doc
         flete_val_doc = data.get('flete_val', 0)
         quotes_list.append({
             "id": quote.id,
@@ -385,7 +474,6 @@ def get_all_quotes_for_tracking(db, tienda):
         })
     return quotes_list
 
-
 def update_quotes_tracking(db, edited_data):
     if not db: return
     try:
@@ -396,13 +484,11 @@ def update_quotes_tracking(db, edited_data):
         st.error(f"Error al actualizar seguimiento: {e}")
 
 # --- GENERACIÓN DEL PDF ---
-
 def generate_pdf_content(quote_data):
     pdf = PDF('P', 'mm', 'A4')
-    pdf.set_auto_page_break(auto=True, margin=15)  # salto automático
+    pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
     
-    # Encabezado página 1
     pdf.set_font(pdf.current_font_family, "B", 22)
     pdf.set_text_color(*pdf.color_primary)
     pdf.set_y(45)
@@ -412,7 +498,6 @@ def generate_pdf_content(quote_data):
     
     col_widths = {'img': 30, 'name': 70, 'sku': 20, 'qty': 15, 'price': 25, 'total': 30}
     
-    # Activar modo tabla
     pdf.is_table_page = True
     pdf.table_col_widths = col_widths
     pdf.draw_table_header(col_widths)
@@ -422,10 +507,8 @@ def generate_pdf_content(quote_data):
         pdf.draw_table_row(item, col_widths, fill)
         fill = not fill
     
-    # Desactivar modo tabla
     pdf.is_table_page = False
 
-    # Reservar espacio para totales (aprox 55mm). Si no cabe, nueva página
     needed = 55
     if pdf.get_y() + needed > pdf.page_break_trigger:
         pdf.add_page()
@@ -439,7 +522,6 @@ def generate_pdf_content(quote_data):
     pdf.set_font(pdf.current_font_family, "B", 10)
     pdf.cell(30, 8, format_currency(quote_data['subtotal']), 0, 1, 'R')
 
-    # Flete: muestra etiqueta y valor
     pdf.set_font(pdf.current_font_family, "", 10)
     pdf.set_x(total_label_x)
     flete_label = "FLETE (INCLUIDO)" if str(quote_data.get('flete_str','')).upper() == 'INCLUIDO' else "FLETE"
@@ -464,10 +546,8 @@ def generate_pdf_content(quote_data):
     pdf.cell(30, 10, format_currency(quote_data['total_cotizacion']), 0, 1, 'R')
     return bytes(pdf.output())
 
-# --- INICIALIZACIÓN Y GESTIÓN DEL ESTADO DE SESIÓN ---
-
+# --- ESTADO DE SESIÓN ---
 def init_session_state():
-    """Inicializa todas las claves necesarias en el estado de la sesión si no existen."""
     defaults = {
         'tienda_seleccionada': None, 'quote_items': {}, 'current_quote_id': None,
         'cliente_nombre': "", 'cliente_nit': "", 'cliente_ciudad': "",
@@ -482,7 +562,6 @@ def init_session_state():
         st.session_state.setdefault(key, value)
 
 def clear_form_state():
-    """Limpia solo el estado del formulario de creación, preservando la tienda y el catálogo."""
     current_tienda = st.session_state.tienda_seleccionada
     products_df = st.session_state.get('products_df')
     
@@ -603,14 +682,36 @@ else:
             st.title("GENERADOR DE COTIZACIONES")
 
         st.markdown("---")
-        st.header("Paso 1: Cargar Catálogo de Productos")
-        uploaded_file = st.file_uploader("📤 Selecciona el archivo CSV de Wix", type=['csv'], key="csv_uploader")
+        st.header("Paso 1: Catálogo de Productos (Sincronizado)")
+        
+        col_cat_1, col_cat_2 = st.columns([3, 1])
+        with col_cat_1:
+            st.info("El catálogo se conecta directamente a Wix y trae TODOS los productos (incluyendo stock 0).")
+        with col_cat_2:
+            if st.button("🔄 Forzar Actualización", help="Vuelve a descargar los productos desde Wix"):
+                st.cache_data.clear()
+                st.rerun()
 
-        if uploaded_file:
-            st.session_state.products_df = process_wix_csv(uploaded_file)
+        # Cargar datos automáticamente si no existen
+        if st.session_state.get('products_df') is None:
+            df_wix = fetch_and_process_wix_data()
+            if df_wix is not None:
+                st.session_state.products_df = df_wix
+            else:
+                st.warning("⚠️ No se pudieron cargar los productos. Revisa tu conexión o API Key.")
 
+        # Mostrar confirmación si ya están cargados
         if st.session_state.get('products_df') is not None:
-            st.success(f"✅ Catálogo cargado con {len(st.session_state.products_df)} productos.")
+            st.success(f"✅ Catálogo sincronizado: {len(st.session_state.products_df)} productos disponibles.")
+            
+            # Buscador rápido para verificar
+            with st.expander("🔍 Verificar productos (Buscador rápido)"):
+                search_term = st.text_input("Buscar por nombre o SKU en el catálogo cargado:")
+                if search_term:
+                    mask = st.session_state.products_df.apply(lambda x: search_term.lower() in str(x).lower(), axis=1)
+                    st.dataframe(st.session_state.products_df[mask].head(10))
+                else:
+                    st.dataframe(st.session_state.products_df.head())
             st.divider()
 
             st.header("Paso 2: Información General")
@@ -707,7 +808,7 @@ else:
                     if item.get('imagen_base64'):
                         img_bytes = base64.b64decode(item['imagen_base64'])
                         cols[0].image(img_bytes, width=70)
-                    elif item.get('imagen_url'):
+                    elif item.get('imagen_url') and "placehold.co" not in item['imagen_url']:
                         cols[0].image(item['imagen_url'], width=70)
                     else:
                         cols[0].markdown("S/I")
@@ -725,7 +826,6 @@ else:
                 subtotal = sum(item['valor_total'] for item in st.session_state.quote_items.values())
                 total_unidades = sum(item['cantidad'] for item in st.session_state.quote_items.values())
 
-                # --- INICIO: SECCIÓN DE CÓDIGO MODIFICADA ---
                 st.subheader("Costo de Envío (Flete)")
                 
                 opcion_flete = st.radio(
@@ -758,7 +858,6 @@ else:
                 t2.metric("FLETE", flete_display_val)
                 
                 t3.metric("TOTAL COTIZACION", format_currency(total_cotizacion))
-                # --- FIN: SECCIÓN DE CÓDIGO MODIFICADA ---
 
                 st.caption(f"Total de unidades: {total_unidades}")
                 
