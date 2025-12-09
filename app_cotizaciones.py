@@ -127,6 +127,12 @@ def diagnose_wix_api():
                 "paging": {
                     "limit": 1,
                     "offset": 0
+                },
+                "filter": {
+                    "$or": [
+                        {"visible": True},
+                        {"visible": False}
+                    ]
                 }
             }
         }
@@ -135,12 +141,11 @@ def diagnose_wix_api():
         
         if response.status_code == 200:
             data = response.json()
+            total_results = data.get("totalResults")
             metadata = data.get("metadata", {})
-            total_count = metadata.get("count")
-            total_items = metadata.get("items")
             
-            st.write(f"**Total según metadata.count:** {total_count}")
-            st.write(f"**Total según metadata.items:** {total_items}")
+            st.write(f"**Total según totalResults:** {total_results}")
+            st.write(f"**Total según metadata.items:** {metadata.get('items')}")
             st.write(f"**Offset actual:** {metadata.get('offset', 0)}")
             
             st.json(metadata)
@@ -153,9 +158,18 @@ def diagnose_wix_api():
     st.write("### Test 2: Productos con diferentes filtros")
     
     test_cases = [
-        ("Sin filtros", {}),
+        ("Todos (visible true/false)", {
+            "filter": {
+                "$or": [
+                    {"visible": True},
+                    {"visible": False}
+                ]
+            }
+        }),
         ("Solo visibles", {"filter": {"visible": True}}),
-        ("Incluyendo no visibles", {"filter": {"visible": False}}),
+        ("Solo no visibles", {"filter": {"visible": False}}),
+        ("In stock", {"filter": {"stock.inStock": True}}),
+        ("Out of stock", {"filter": {"stock.inStock": False}}),
     ]
     
     for test_name, filter_config in test_cases:
@@ -173,8 +187,8 @@ def diagnose_wix_api():
             
             if response.status_code == 200:
                 data = response.json()
-                count = data.get("metadata", {}).get("count", 0)
-                st.write(f"**{test_name}:** {count} productos")
+                total = data.get("totalResults", 0)
+                st.write(f"**{test_name}:** {total} productos")
             else:
                 st.write(f"**{test_name}:** Error {response.status_code}")
         except Exception as e:
@@ -185,7 +199,13 @@ def diagnose_wix_api():
     try:
         payload = {
             "query": {
-                "paging": {"limit": 1, "offset": 0}
+                "paging": {"limit": 1, "offset": 0},
+                "filter": {
+                    "$or": [
+                        {"visible": True},
+                        {"visible": False}
+                    ]
+                }
             }
         }
         
@@ -199,6 +219,7 @@ def diagnose_wix_api():
                 st.write(f"**Nombre:** {product.get('name')}")
                 st.write(f"**ID:** {product.get('id')}")
                 st.write(f"**Visible:** {product.get('visible')}")
+                st.write(f"**In Stock:** {product.get('stock', {}).get('inStock')}")
                 st.write(f"**Manage Variants:** {product.get('manageVariants')}")
                 st.write(f"**Número de variantes:** {len(product.get('variants', []))}")
                 
@@ -229,11 +250,13 @@ def diagnose_wix_api():
     except Exception as e:
         st.error(f"Error en Test 4: {e}")
 
+
 # --- FUNCIONES DE WIX API ---
 @st.cache_data(ttl=3600)  # Cache por 1 hora
 def fetch_wix_products():
     """
     Obtiene todos los productos desde la API de Wix usando offset paging.
+    Incluye productos visibles y no visibles (out of stock).
     Retorna un DataFrame procesado similar al CSV.
     """
     if not WIX_CONFIG.get('api_key') or not WIX_CONFIG.get('site_id'):
@@ -265,7 +288,7 @@ def fetch_wix_products():
         while True:
             page_count += 1
             
-            # Construir payload - incluir productos con y sin tracking
+            # Construir payload - INCLUIR productos visibles Y no visibles
             payload = {
                 "query": {
                     "paging": {
@@ -274,8 +297,8 @@ def fetch_wix_products():
                     },
                     "filter": {
                         "$or": [
-                            {"stock.trackInventory": True},
-                            {"stock.trackInventory": False}
+                            {"visible": True},
+                            {"visible": False}
                         ]
                     }
                 }
@@ -364,7 +387,7 @@ def fetch_wix_products():
                 total_results = data.get("totalResults")
                 if total_results:
                     st.session_state.wix_debug_log.append({
-                        'msg': f"📊 Total de productos en Wix: {total_results}"
+                        'msg': f"📊 Total de productos en Wix (visibles + no visibles): {total_results}"
                     })
             
             products = data.get("products", [])
@@ -431,17 +454,19 @@ def fetch_wix_products():
         st.code(traceback.format_exc())
         return None
 
+
 def process_wix_api_products(products: list) -> pd.DataFrame:
     """
     Convierte la respuesta de la API de Wix al formato del DataFrame esperado.
     EXPANDE todas las variantes de cada producto.
+    INCLUYE productos no visibles (out of stock).
     """
     processed_products = []
     
     for product in products:
-        # Verificar visibilidad del producto padre
-        if not product.get("visible", True):
-            continue
+        # NO FILTRAR POR VISIBLE - incluir todos
+        # if not product.get("visible", True):
+        #     continue
             
         # Manejo de variantes
         if product.get("manageVariants") and product.get("variants"):
@@ -1095,7 +1120,8 @@ else:
                     st.session_state.products_df = fetch_wix_products()
                     if st.session_state.products_df is not None:
                         st.rerun()
-                # MOSTRAR DEBUG LOG (PERSISTE)
+            
+            # MOSTRAR DEBUG LOG (PERSISTE)
             if 'wix_debug_log' in st.session_state and st.session_state.wix_debug_log:
                 with st.expander("🔍 Ver Debug Log de Wix API", expanded=False):
                     for entry in st.session_state.wix_debug_log:
