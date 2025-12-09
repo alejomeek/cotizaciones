@@ -233,18 +233,17 @@ def diagnose_wix_api():
 @st.cache_data(ttl=3600)  # Cache por 1 hora
 def fetch_wix_products():
     """
-    Obtiene todos los productos desde la API de Wix usando cursor paging.
+    Obtiene todos los productos desde la API de Wix usando offset paging.
     Retorna un DataFrame procesado similar al CSV.
     """
     if not WIX_CONFIG.get('api_key') or not WIX_CONFIG.get('site_id'):
         st.warning("⚠️ Configuración de Wix API no disponible. Usa el método manual CSV.")
         return None
     
-    # Inicializar lista de debug en session_state
+    # Limpiar log de debug
     if 'wix_debug_log' not in st.session_state:
         st.session_state.wix_debug_log = []
-    
-    st.session_state.wix_debug_log = []  # Limpiar log anterior
+    st.session_state.wix_debug_log = []
     
     try:
         url = "https://www.wixapis.com/stores/v1/products/query"
@@ -255,39 +254,39 @@ def fetch_wix_products():
         }
         
         all_products = []
-        cursor = None
+        offset = 0
+        limit = 100
         max_retries = 3
         page_count = 0
+        total_results = None
         
         progress_bar = st.progress(0, text="Conectando con Wix...")
         
         while True:
             page_count += 1
             
-            # Construir payload con cursor paging
+            # Construir payload con offset
             payload = {
                 "query": {
                     "paging": {
-                        "limit": 100
+                        "limit": limit,
+                        "offset": offset
                     }
                 }
             }
-            
-            # Agregar cursor si existe (para páginas siguientes)
-            if cursor:
-                payload["query"]["cursorPaging"] = {
-                    "cursor": cursor
-                }
             
             # Sistema de reintentos
             success = False
             for attempt in range(max_retries):
                 try:
-                    progress_text = f"Obteniendo productos... Página {page_count} (Total: {len(all_products)})"
-                    progress_bar.progress(
-                        min(len(all_products) / 8500, 0.99),
-                        text=progress_text
-                    )
+                    if total_results:
+                        progress_val = min(len(all_products) / total_results, 0.99)
+                        progress_text = f"Obteniendo productos... {len(all_products)}/{total_results}"
+                    else:
+                        progress_val = min(len(all_products) / 8500, 0.99)
+                        progress_text = f"Obteniendo productos... Página {page_count} (Total: {len(all_products)})"
+                    
+                    progress_bar.progress(progress_val, text=progress_text)
                     
                     response = requests.post(
                         url, 
@@ -310,7 +309,7 @@ def fetch_wix_products():
                     elif response.status_code == 429:
                         wait_time = 2 ** attempt
                         progress_bar.progress(
-                            min(len(all_products) / 8500, 0.99),
+                            progress_val,
                             text=f"Límite de solicitudes. Esperando {wait_time}s..."
                         )
                         time.sleep(wait_time)
@@ -325,23 +324,15 @@ def fetch_wix_products():
                         
                 except requests.exceptions.Timeout:
                     if attempt < max_retries - 1:
-                        progress_bar.progress(
-                            min(len(all_products) / 8500, 0.99),
-                            text=f"Timeout. Reintentando ({attempt + 1}/{max_retries})..."
-                        )
                         time.sleep(3)
                         continue
                     else:
                         progress_bar.empty()
-                        st.error("❌ Timeout al conectar con Wix. Intenta nuevamente.")
+                        st.error("❌ Timeout al conectar con Wix.")
                         return None
                         
                 except requests.exceptions.ConnectionError:
                     if attempt < max_retries - 1:
-                        progress_bar.progress(
-                            min(len(all_products) / 8500, 0.99),
-                            text=f"Error de conexión. Reintentando ({attempt + 1}/{max_retries})..."
-                        )
                         time.sleep(3)
                         continue
                     else:
@@ -362,65 +353,48 @@ def fetch_wix_products():
                 st.error("❌ Respuesta inválida de Wix API")
                 return None
             
-            # GUARDAR DEBUG EN SESSION STATE
-            if page_count <= 2:  # Solo primeras 2 páginas
-                st.session_state.wix_debug_log.append({
-                    'page': page_count,
-                    'response_keys': list(data.keys()),
-                    'products_count': len(data.get("products", [])),
-                    'full_response': data
-                })
+            # Obtener totalResults en la primera página
+            if page_count == 1:
+                total_results = data.get("totalResults")
+                if total_results:
+                    st.session_state.wix_debug_log.append({
+                        'msg': f"📊 Total de productos en Wix: {total_results}"
+                    })
             
             products = data.get("products", [])
             
-            log_msg = f"Página {page_count}: Recibidos {len(products)} productos. Total: {len(all_products) + len(products)}"
+            log_msg = f"Página {page_count} (offset {offset}): Recibidos {len(products)} productos. Total acumulado: {len(all_products) + len(products)}"
             st.session_state.wix_debug_log.append({'msg': log_msg})
             
             if not products:
-                st.session_state.wix_debug_log.append({'msg': f"No hay más productos en página {page_count}"})
+                st.session_state.wix_debug_log.append({
+                    'msg': f"✅ No hay más productos. Terminado en página {page_count}"
+                })
                 break
             
             all_products.extend(products)
             
-            # Intentar diferentes formas de obtener el cursor
-            next_cursor = None
-            
-            # Opción 1: pagingMetadata.cursors.next
-            if "pagingMetadata" in data:
-                paging_metadata = data.get("pagingMetadata", {})
-                cursors = paging_metadata.get("cursors", {})
-                next_cursor = cursors.get("next")
+            # Si recibimos menos productos que el límite, hemos terminado
+            if len(products) < limit:
                 st.session_state.wix_debug_log.append({
-                    'msg': f"Página {page_count} - pagingMetadata: {paging_metadata}",
-                    'cursor_found': bool(next_cursor)
-                })
-            
-            # Opción 2: metadata.cursors.next
-            if not next_cursor and "metadata" in data:
-                metadata = data.get("metadata", {})
-                cursors = metadata.get("cursors", {})
-                next_cursor = cursors.get("next")
-                st.session_state.wix_debug_log.append({
-                    'msg': f"Página {page_count} - metadata: {metadata}",
-                    'cursor_found': bool(next_cursor)
-                })
-            
-            # Si no hay cursor siguiente, terminamos
-            if not next_cursor:
-                st.session_state.wix_debug_log.append({
-                    'msg': f"⚠️ No cursor 'next' encontrado. Terminando en página {page_count}"
+                    'msg': f"✅ Última página alcanzada (recibidos {len(products)} < {limit})"
                 })
                 break
             
-            cursor = next_cursor
-            st.session_state.wix_debug_log.append({
-                'msg': f"✅ Cursor para página {page_count + 1}: {cursor[:50]}..."
-            })
-            
-            # Seguridad
-            if page_count > 100:
+            # Si ya tenemos todos los productos según totalResults
+            if total_results and len(all_products) >= total_results:
                 st.session_state.wix_debug_log.append({
-                    'msg': f"Límite de 100 páginas alcanzado"
+                    'msg': f"✅ Todos los productos obtenidos ({len(all_products)}/{total_results})"
+                })
+                break
+            
+            # Avanzar al siguiente offset
+            offset += limit
+            
+            # Seguridad: evitar loops infinitos
+            if page_count > 200:
+                st.session_state.wix_debug_log.append({
+                    'msg': f"⚠️ Límite de 200 páginas alcanzado. Productos: {len(all_products)}"
                 })
                 break
         
@@ -432,7 +406,11 @@ def fetch_wix_products():
             st.warning("No se encontraron productos en Wix.")
             return None
         
+        st.success(f"🎉 Total de productos obtenidos de Wix: {len(all_products)}")
+        
         df_processed = process_wix_api_products(all_products)
+        
+        st.info(f"📊 Productos procesados y listos: {len(df_processed)}")
         
         return df_processed
         
