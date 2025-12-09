@@ -19,6 +19,29 @@ st.set_page_config(
     layout="wide"
 )
 
+# --- CONFIGURACIÓN DE WIX API ---
+def get_wix_config():
+    """Obtiene la configuración de Wix desde secrets o variables de entorno."""
+    try:
+        # Intenta obtener desde Streamlit secrets (producción)
+        if 'wix_api' in st.secrets:
+            return {
+                'api_key': st.secrets["wix_api"]["api_key"],
+                'site_id': st.secrets["wix_api"]["site_id"],
+                'account_id': st.secrets["wix_api"]["account_id"]
+            }
+    except Exception:
+        pass
+    
+    # Fallback para desarrollo local (opcional)
+    return {
+        'api_key': os.getenv('WIX_API_KEY', ''),
+        'site_id': os.getenv('WIX_SITE_ID', ''),
+        'account_id': os.getenv('WIX_ACCOUNT_ID', '')
+    }
+
+WIX_CONFIG = get_wix_config()
+
 # --- INICIALIZACIÓN DE FIREBASE ---
 @st.cache_resource
 def init_firebase():
@@ -76,6 +99,160 @@ def process_wix_csv(uploaded_file):
     except Exception as e:
         st.error(f"❌ Error al procesar CSV: {e}")
         return None
+
+@st.cache_data(ttl=3600)  # Cache por 1 hora
+def fetch_wix_products():
+    """
+    Obtiene todos los productos desde la API de Wix.
+    Retorna un DataFrame procesado similar al CSV.
+    """
+    if not WIX_CONFIG.get('api_key') or not WIX_CONFIG.get('site_id'):
+        st.warning("⚠️ Configuración de Wix API no disponible. Usa el método manual CSV.")
+        return None
+    
+    try:
+        url = "https://www.wixapis.com/stores/v1/products/query"
+        headers = {
+            "Authorization": WIX_CONFIG['api_key'],
+            "Content-Type": "application/json",
+            "wix-site-id": WIX_CONFIG['site_id']
+        }
+        
+        payload = {
+            "query": {
+                "paging": {
+                    "limit": 100,
+                    "offset": 0
+                }
+            }
+        }
+        
+        all_products = []
+        offset = 0
+        
+        # Paginación para obtener todos los productos
+        with st.spinner(f"Obteniendo productos desde Wix..."):
+            while True:
+                payload["query"]["paging"]["offset"] = offset
+                response = requests.post(url, json=payload, headers=headers, timeout=10)
+                
+                if response.status_code != 200:
+                    st.error(f"Error al obtener productos de Wix: {response.status_code} - {response.text}")
+                    return None
+                
+                data = response.json()
+                products = data.get("products", [])
+                
+                if not products:
+                    break
+                
+                all_products.extend(products)
+                
+                if len(products) < 100:
+                    break
+                
+                offset += 100
+        
+        if not all_products:
+            st.warning("No se encontraron productos en Wix.")
+            return None
+        
+        df_processed = process_wix_api_products(all_products)
+        return df_processed
+        
+    except requests.exceptions.RequestException as e:
+        st.error(f"❌ Error de conexión con Wix API: {e}")
+        return None
+    except Exception as e:
+        st.error(f"❌ Error inesperado al conectar con Wix API: {e}")
+        return None
+
+
+def process_wix_api_products(products: list) -> pd.DataFrame:
+    """
+    Convierte la respuesta de la API de Wix al formato del DataFrame esperado.
+    """
+    processed_products = []
+    
+    for product in products:
+        # Manejo de variantes
+        if product.get("manageVariants") and product.get("variants"):
+            for variant_data in product["variants"]:
+                variant = variant_data.get("variant", {})
+                sku = variant.get("sku", "")
+                
+                if not sku or not variant.get("visible", True):
+                    continue
+                
+                price_data = variant.get("priceData", {})
+                price = price_data.get("price", 0)
+                
+                media = product.get("media", {})
+                main_media = media.get("mainMedia", {})
+                image_data = main_media.get("image", {})
+                image_url = image_data.get("url", "")
+                
+                if not image_url:
+                    image_url = "https://placehold.co/100x100/EEE/333?text=S/I"
+                
+                variant_name = product.get("name", "")
+                choices = variant_data.get("choices", {})
+                if choices:
+                    variant_suffix = " - " + ", ".join(choices.values())
+                    variant_name += variant_suffix
+                
+                stock = product.get("stock", {})
+                inventory = 0
+                if stock.get("trackInventory"):
+                    inventory = stock.get("quantity", 0)
+                
+                processed_products.append({
+                    "sku": sku,
+                    "nombre": variant_name,
+                    "precio_iva_incluido": price,
+                    "imagen_url": image_url,
+                    "inventory": inventory
+                })
+        else:
+            sku = product.get("sku", "")
+            
+            if not sku or not product.get("visible", True):
+                continue
+            
+            price_data = product.get("priceData", {})
+            price = price_data.get("price", 0)
+            
+            media = product.get("media", {})
+            main_media = media.get("mainMedia", {})
+            image_data = main_media.get("image", {})
+            image_url = image_data.get("url", "")
+            
+            if not image_url:
+                image_url = "https://placehold.co/100x100/EEE/333?text=S/I"
+            
+            stock = product.get("stock", {})
+            inventory = 0
+            if stock.get("trackInventory"):
+                inventory = stock.get("quantity", 0)
+            
+            processed_products.append({
+                "sku": sku,
+                "nombre": product.get("name", ""),
+                "precio_iva_incluido": price,
+                "imagen_url": image_url,
+                "inventory": inventory
+            })
+    
+    df = pd.DataFrame(processed_products)
+    
+    if df.empty:
+        return df
+    
+    df.dropna(subset=['sku', 'nombre'], inplace=True)
+    df['inventory'] = pd.to_numeric(df['inventory'], errors='coerce').fillna(0).astype(int)
+    df['precio_iva_incluido'] = pd.to_numeric(df['precio_iva_incluido'], errors='coerce').fillna(0)
+    
+    return df[['sku', 'nombre', 'precio_iva_incluido', 'imagen_url', 'inventory']]
 
 def remove_item(sku):
     if sku in st.session_state.quote_items:
@@ -526,6 +703,16 @@ with st.sidebar:
 
     if st.session_state.tienda_seleccionada:
         st.success(f"Tienda seleccionada: **{st.session_state.tienda_seleccionada}**")
+    
+    # Botón de sincronización Wix
+    if WIX_CONFIG.get('api_key'):
+        st.divider()
+        if st.button("🔄 Sincronizar Wix", use_container_width=True, help="Actualizar catálogo desde Wix"):
+            st.cache_data.clear()
+            st.session_state.products_df = fetch_wix_products()
+            if st.session_state.products_df is not None:
+                st.success("✅ Catálogo sincronizado")
+                st.rerun()
 
 # --- UI PRINCIPAL ---
 if not st.session_state.tienda_seleccionada:
@@ -604,10 +791,49 @@ else:
 
         st.markdown("---")
         st.header("Paso 1: Cargar Catálogo de Productos")
-        uploaded_file = st.file_uploader("📤 Selecciona el archivo CSV de Wix", type=['csv'], key="csv_uploader")
 
-        if uploaded_file:
-            st.session_state.products_df = process_wix_csv(uploaded_file)
+        # Verificar si la API de Wix está configurada
+        wix_api_available = bool(WIX_CONFIG.get('api_key'))
+
+        if wix_api_available:
+            metodo_carga = st.radio(
+                "Elige cómo cargar el catálogo:",
+                ["🔄 Cargar desde Wix API (Automático)", "📤 Subir archivo CSV (Manual)"],
+                horizontal=True,
+                key="metodo_carga"
+            )
+        else:
+            metodo_carga = "📤 Subir archivo CSV (Manual)"
+            st.info("💡 Configura la API de Wix en los secrets de Streamlit Cloud para cargar automáticamente.")
+
+        if metodo_carga == "🔄 Cargar desde Wix API (Automático)":
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                st.info("Se cargarán automáticamente los productos desde tu tienda Wix.")
+                if st.session_state.get('products_df') is not None:
+                    st.success(f"✅ Catálogo cargado: {len(st.session_state.products_df)} productos")
+            
+            with col2:
+                if st.button("🔄 Actualizar", type="primary", use_container_width=True):
+                    st.cache_data.clear()
+                    st.session_state.products_df = fetch_wix_products()
+                    if st.session_state.products_df is not None:
+                        st.rerun()
+            
+            # Auto-cargar al inicio si no hay productos
+            if 'products_df' not in st.session_state or st.session_state.products_df is None:
+                st.session_state.products_df = fetch_wix_products()
+
+        else:  # Método manual CSV
+            uploaded_file = st.file_uploader(
+                "📤 Selecciona el archivo CSV de Wix", 
+                type=['csv'], 
+                key="csv_uploader"
+            )
+            
+            if uploaded_file:
+                st.session_state.products_df = process_wix_csv(uploaded_file)
 
         if st.session_state.get('products_df') is not None:
             st.success(f"✅ Catálogo cargado con {len(st.session_state.products_df)} productos.")
