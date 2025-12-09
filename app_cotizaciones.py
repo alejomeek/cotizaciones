@@ -904,10 +904,6 @@ else:
                     st.session_state.products_df = fetch_wix_products()
                     if st.session_state.products_df is not None:
                         st.rerun()
-            
-            # Auto-cargar al inicio si no hay productos
-            if 'products_df' not in st.session_state or st.session_state.products_df is None:
-                st.session_state.products_df = fetch_wix_products()
 
         else:  # Método manual CSV
             uploaded_file = st.file_uploader(
