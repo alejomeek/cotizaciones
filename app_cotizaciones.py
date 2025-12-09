@@ -134,31 +134,26 @@ def fetch_wix_products():
         # Paginación para obtener todos los productos
         progress_bar = st.progress(0, text="Conectando con Wix...")
         
-        page_count = 0
         while True:
-            page_count += 1
             payload["query"]["paging"]["offset"] = offset
             
             # Sistema de reintentos
-            success = False
             for attempt in range(max_retries):
                 try:
-                    progress_text = f"Obteniendo productos... Página {page_count} (Total: {len(all_products)})"
                     progress_bar.progress(
-                        min(len(all_products) / 8500, 0.99),  # Estimación basada en tus 8029 productos
-                        text=progress_text
+                        min(offset / 500, 0.99), 
+                        text=f"Obteniendo productos... (Offset: {offset})"
                     )
                     
                     response = requests.post(
                         url, 
                         json=payload, 
                         headers=headers, 
-                        timeout=30
+                        timeout=30  # Aumentado a 30 segundos
                     )
                     
                     if response.status_code == 200:
-                        success = True
-                        break
+                        break  # Éxito, salir del loop de reintentos
                     elif response.status_code == 401:
                         progress_bar.empty()
                         st.error("❌ Error de autenticación. Verifica tu API Key de Wix.")
@@ -168,10 +163,11 @@ def fetch_wix_products():
                         st.error("❌ Acceso denegado. Verifica los permisos de tu API Key.")
                         return None
                     elif response.status_code == 429:
-                        wait_time = 2 ** attempt
+                        # Rate limit - esperar antes de reintentar
+                        wait_time = 2 ** attempt  # Backoff exponencial
                         progress_bar.progress(
-                            min(len(all_products) / 8500, 0.99),
-                            text=f"Límite de solicitudes. Esperando {wait_time}s..."
+                            min(offset / 500, 0.99),
+                            text=f"Límite de solicitudes alcanzado. Reintentando en {wait_time}s..."
                         )
                         import time
                         time.sleep(wait_time)
@@ -188,35 +184,30 @@ def fetch_wix_products():
                 except requests.exceptions.Timeout:
                     if attempt < max_retries - 1:
                         progress_bar.progress(
-                            min(len(all_products) / 8500, 0.99),
+                            min(offset / 500, 0.99),
                             text=f"Timeout. Reintentando ({attempt + 1}/{max_retries})..."
                         )
                         import time
-                        time.sleep(3)
+                        time.sleep(2)
                         continue
                     else:
                         progress_bar.empty()
-                        st.error("❌ Timeout al conectar con Wix. Intenta nuevamente.")
+                        st.error("❌ Timeout al conectar con Wix. La conexión está tardando demasiado. Intenta nuevamente o usa el método CSV.")
                         return None
                         
                 except requests.exceptions.ConnectionError:
                     if attempt < max_retries - 1:
                         progress_bar.progress(
-                            min(len(all_products) / 8500, 0.99),
+                            min(offset / 500, 0.99),
                             text=f"Error de conexión. Reintentando ({attempt + 1}/{max_retries})..."
                         )
                         import time
-                        time.sleep(3)
+                        time.sleep(2)
                         continue
                     else:
                         progress_bar.empty()
-                        st.error("❌ No se pudo conectar con Wix.")
+                        st.error("❌ No se pudo conectar con Wix. Verifica tu conexión a internet.")
                         return None
-            
-            if not success:
-                progress_bar.empty()
-                st.error(f"❌ No se pudo obtener la página {page_count}")
-                break
             
             # Procesar respuesta exitosa
             try:
@@ -228,81 +219,54 @@ def fetch_wix_products():
             
             products = data.get("products", [])
             
-            # Debug: mostrar info de la respuesta
-            st.write(f"DEBUG - Página {page_count}: Recibidos {len(products)} productos. Total acumulado: {len(all_products) + len(products)}")
-            
             if not products:
-                st.info(f"ℹ️ No hay más productos. Se obtuvieron {page_count} páginas.")
                 break
             
             all_products.extend(products)
             
-            # IMPORTANTE: La condición correcta para continuar
-            # Continuar mientras se reciban exactamente 100 productos
+            # Si obtuvo menos de 100, ya no hay más productos
             if len(products) < 100:
-                st.info(f"✅ Última página alcanzada. Total: {len(all_products)} productos en {page_count} páginas.")
                 break
             
             offset += 100
-            
-            # Seguridad: evitar loops infinitos (máximo 100 páginas = 10,000 productos)
-            if page_count > 100:
-                st.warning(f"⚠️ Se alcanzó el límite de páginas. Productos obtenidos: {len(all_products)}")
-                break
         
         progress_bar.progress(1.0, text=f"✅ {len(all_products)} productos obtenidos")
         import time
-        time.sleep(1)
+        time.sleep(0.5)
         progress_bar.empty()
         
         if not all_products:
             st.warning("No se encontraron productos en Wix.")
             return None
         
-        st.success(f"🎉 Total de productos crudos obtenidos de Wix: {len(all_products)}")
-        
         df_processed = process_wix_api_products(all_products)
-        
-        st.info(f"📊 Productos procesados y listos para usar: {len(df_processed)}")
-        
         return df_processed
         
     except requests.exceptions.RequestException as e:
         st.error(f"❌ Error de conexión con Wix API: {e}")
+        st.info("💡 Sugerencia: Intenta usar el método CSV manual o verifica tu conexión a internet.")
         return None
     except Exception as e:
-        st.error(f"❌ Error inesperado: {e}")
-        import traceback
-        st.code(traceback.format_exc())
+        st.error(f"❌ Error inesperado al conectar con Wix API: {e}")
+        st.info("💡 Sugerencia: Usa el método CSV manual temporalmente.")
         return None
 
 
 def process_wix_api_products(products: list) -> pd.DataFrame:
     """
     Convierte la respuesta de la API de Wix al formato del DataFrame esperado.
-    EXPANDE todas las variantes de cada producto.
     """
     processed_products = []
     
     for product in products:
-        # Verificar visibilidad del producto padre
-        if not product.get("visible", True):
-            continue
-            
         # Manejo de variantes
         if product.get("manageVariants") and product.get("variants"):
-            # EXPANDIR TODAS LAS VARIANTES
             for variant_data in product["variants"]:
                 variant = variant_data.get("variant", {})
                 sku = variant.get("sku", "")
                 
-                # Cambiar esta condición - antes filtraba demasiado
-                if not sku:
+                if not sku or not variant.get("visible", True):
                     continue
-                
-                # NO FILTRAR POR VISIBLE en variantes individuales
-                # if not variant.get("visible", True):
-                #     continue
                 
                 price_data = variant.get("priceData", {})
                 price = price_data.get("price", 0)
@@ -334,10 +298,9 @@ def process_wix_api_products(products: list) -> pd.DataFrame:
                     "inventory": inventory
                 })
         else:
-            # Producto simple sin variantes
             sku = product.get("sku", "")
             
-            if not sku:
+            if not sku or not product.get("visible", True):
                 continue
             
             price_data = product.get("priceData", {})
@@ -794,6 +757,133 @@ def clear_form_state():
 
 init_session_state()
 
+def diagnose_wix_api():
+    """
+    Función de diagnóstico para entender qué está pasando con la API de Wix.
+    """
+    if not WIX_CONFIG.get('api_key') or not WIX_CONFIG.get('site_id'):
+        st.error("Configuración de Wix no disponible")
+        return
+    
+    st.subheader("🔍 Diagnóstico de API de Wix")
+    
+    # Test 1: Contar productos totales
+    st.write("### Test 1: Conteo total de productos")
+    try:
+        url = "https://www.wixapis.com/stores/v1/products/query"
+        headers = {
+            "Authorization": WIX_CONFIG['api_key'],
+            "Content-Type": "application/json",
+            "wix-site-id": WIX_CONFIG['site_id']
+        }
+        
+        payload = {
+            "query": {
+                "paging": {
+                    "limit": 1,
+                    "offset": 0
+                }
+            }
+        }
+        
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            data = response.json()
+            metadata = data.get("metadata", {})
+            total_count = metadata.get("count")
+            total_items = metadata.get("items")
+            
+            st.write(f"**Total según metadata.count:** {total_count}")
+            st.write(f"**Total según metadata.items:** {total_items}")
+            st.write(f"**Offset actual:** {metadata.get('offset', 0)}")
+            
+            st.json(metadata)
+        else:
+            st.error(f"Error {response.status_code}: {response.text}")
+    except Exception as e:
+        st.error(f"Error en Test 1: {e}")
+    
+    # Test 2: Verificar filtros aplicados
+    st.write("### Test 2: Productos con diferentes filtros")
+    
+    test_cases = [
+        ("Sin filtros", {}),
+        ("Solo visibles", {"filter": {"visible": True}}),
+        ("Incluyendo no visibles", {"filter": {"visible": False}}),
+    ]
+    
+    for test_name, filter_config in test_cases:
+        try:
+            payload = {
+                "query": {
+                    "paging": {"limit": 1, "offset": 0}
+                }
+            }
+            
+            if filter_config:
+                payload["query"].update(filter_config)
+            
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                count = data.get("metadata", {}).get("count", 0)
+                st.write(f"**{test_name}:** {count} productos")
+            else:
+                st.write(f"**{test_name}:** Error {response.status_code}")
+        except Exception as e:
+            st.write(f"**{test_name}:** Error - {e}")
+    
+    # Test 3: Ver estructura de un producto completo
+    st.write("### Test 3: Estructura de producto de ejemplo")
+    try:
+        payload = {
+            "query": {
+                "paging": {"limit": 1, "offset": 0}
+            }
+        }
+        
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            data = response.json()
+            products = data.get("products", [])
+            if products:
+                product = products[0]
+                st.write(f"**Nombre:** {product.get('name')}")
+                st.write(f"**ID:** {product.get('id')}")
+                st.write(f"**Visible:** {product.get('visible')}")
+                st.write(f"**Manage Variants:** {product.get('manageVariants')}")
+                st.write(f"**Número de variantes:** {len(product.get('variants', []))}")
+                
+                with st.expander("Ver JSON completo del producto"):
+                    st.json(product)
+        else:
+            st.error(f"Error obteniendo producto: {response.status_code}")
+    except Exception as e:
+        st.error(f"Error en Test 3: {e}")
+    
+    # Test 4: Verificar colecciones
+    st.write("### Test 4: Verificar colecciones")
+    try:
+        collections_url = "https://www.wixapis.com/stores/v1/collections/query"
+        payload = {"query": {"paging": {"limit": 100}}}
+        
+        response = requests.post(collections_url, json=payload, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            data = response.json()
+            collections = data.get("collections", [])
+            st.write(f"**Total de colecciones:** {len(collections)}")
+            
+            for col in collections[:5]:  # Mostrar primeras 5
+                st.write(f"- {col.get('name')}: {col.get('numberOfProducts', 'N/A')} productos")
+        else:
+            st.write(f"Error obteniendo colecciones: {response.status_code}")
+    except Exception as e:
+        st.error(f"Error en Test 4: {e}")
+
 # --- BARRA LATERAL ---
 with st.sidebar:
     st.title("Gestión de Cotizaciones")
@@ -834,6 +924,10 @@ with st.sidebar:
             if st.session_state.products_df is not None:
                 st.success("✅ Catálogo sincronizado")
                 st.rerun()
+        
+        # El botón de diagnóstico debe estar al mismo nivel que el de sincronizar
+        if st.button("🔍 Diagnosticar API Wix", use_container_width=True):
+            diagnose_wix_api()
 
 # --- UI PRINCIPAL ---
 if not st.session_state.tienda_seleccionada:
