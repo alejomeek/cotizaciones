@@ -265,7 +265,7 @@ def fetch_wix_products():
         while True:
             page_count += 1
             
-            # Construir payload con offset
+            # Construir payload - SIN FILTRO DE INVENTARIO para obtener todos
             payload = {
                 "query": {
                     "paging": {
@@ -424,7 +424,6 @@ def fetch_wix_products():
         import traceback
         st.code(traceback.format_exc())
         return None
-
 
 def process_wix_api_products(products: list) -> pd.DataFrame:
     """
