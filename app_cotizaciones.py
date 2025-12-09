@@ -231,7 +231,6 @@ def diagnose_wix_api():
 
 # --- FUNCIONES DE WIX API ---
 @st.cache_data(ttl=3600)  # Cache por 1 hora
-@st.cache_data(ttl=3600)  # Cache por 1 hora
 def fetch_wix_products():
     """
     Obtiene todos los productos desde la API de Wix usando cursor paging.
@@ -357,6 +356,11 @@ def fetch_wix_products():
                 st.error("❌ Respuesta inválida de Wix API")
                 return None
             
+            # DEBUG: Ver estructura completa de la respuesta
+            if page_count == 1:
+                st.write("### 🔍 DEBUG - Estructura de respuesta (primera página):")
+                st.json(data)
+            
             products = data.get("products", [])
             
             # Debug: mostrar info de la respuesta
@@ -368,17 +372,43 @@ def fetch_wix_products():
             
             all_products.extend(products)
             
-            # Obtener el cursor para la siguiente página
-            paging_metadata = data.get("pagingMetadata", {})
-            cursors = paging_metadata.get("cursors", {})
-            next_cursor = cursors.get("next")
+            # DEBUG: Mostrar estructura de paginación
+            st.write(f"**Claves en la respuesta:** {list(data.keys())}")
+            
+            # Intentar diferentes formas de obtener el cursor
+            next_cursor = None
+            
+            # Opción 1: pagingMetadata.cursors.next
+            if "pagingMetadata" in data:
+                st.write(f"**pagingMetadata encontrado:** {data['pagingMetadata']}")
+                paging_metadata = data.get("pagingMetadata", {})
+                cursors = paging_metadata.get("cursors", {})
+                next_cursor = cursors.get("next")
+                st.write(f"**Cursor siguiente (Opción 1):** {next_cursor}")
+            
+            # Opción 2: metadata.cursors.next (alternativa)
+            if not next_cursor and "metadata" in data:
+                st.write(f"**metadata encontrado:** {data['metadata']}")
+                metadata = data.get("metadata", {})
+                cursors = metadata.get("cursors", {})
+                next_cursor = cursors.get("next")
+                st.write(f"**Cursor siguiente (Opción 2):** {next_cursor}")
+            
+            # Opción 3: cursors directamente en data
+            if not next_cursor and "cursors" in data:
+                st.write(f"**cursors encontrado directamente:** {data['cursors']}")
+                cursors = data.get("cursors", {})
+                next_cursor = cursors.get("next")
+                st.write(f"**Cursor siguiente (Opción 3):** {next_cursor}")
             
             # Si no hay cursor siguiente, hemos terminado
             if not next_cursor:
-                st.info(f"✅ Última página alcanzada. Total: {len(all_products)} productos en {page_count} páginas.")
+                st.warning(f"⚠️ No se encontró cursor 'next'. Terminando en página {page_count}.")
+                st.info(f"✅ Total obtenido: {len(all_products)} productos en {page_count} páginas.")
                 break
             
             cursor = next_cursor
+            st.success(f"✅ Cursor para página {page_count + 1}: {cursor[:50]}...")
             
             # Seguridad: evitar loops infinitos
             if page_count > 100:
