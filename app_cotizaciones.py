@@ -265,18 +265,12 @@ def fetch_wix_products():
         while True:
             page_count += 1
             
-            # Construir payload - FORZAR traer productos sin importar stock
+            # Construir payload - SIN FILTRO DE INVENTARIO para obtener todos
             payload = {
                 "query": {
                     "paging": {
                         "limit": limit,
                         "offset": offset
-                    },
-                    "filter": {
-                        "$or": [
-                            {"stock.inStock": True},
-                            {"stock.inStock": False}
-                        ]
                     }
                 }
             }
