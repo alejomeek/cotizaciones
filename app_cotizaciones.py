@@ -134,26 +134,31 @@ def fetch_wix_products():
         # Paginación para obtener todos los productos
         progress_bar = st.progress(0, text="Conectando con Wix...")
         
+        page_count = 0
         while True:
+            page_count += 1
             payload["query"]["paging"]["offset"] = offset
             
             # Sistema de reintentos
+            success = False
             for attempt in range(max_retries):
                 try:
+                    progress_text = f"Obteniendo productos... Página {page_count} (Total: {len(all_products)})"
                     progress_bar.progress(
-                        min(offset / 500, 0.99), 
-                        text=f"Obteniendo productos... (Offset: {offset})"
+                        min(len(all_products) / 8500, 0.99),  # Estimación basada en tus 8029 productos
+                        text=progress_text
                     )
                     
                     response = requests.post(
                         url, 
                         json=payload, 
                         headers=headers, 
-                        timeout=30  # Aumentado a 30 segundos
+                        timeout=30
                     )
                     
                     if response.status_code == 200:
-                        break  # Éxito, salir del loop de reintentos
+                        success = True
+                        break
                     elif response.status_code == 401:
                         progress_bar.empty()
                         st.error("❌ Error de autenticación. Verifica tu API Key de Wix.")
@@ -163,11 +168,10 @@ def fetch_wix_products():
                         st.error("❌ Acceso denegado. Verifica los permisos de tu API Key.")
                         return None
                     elif response.status_code == 429:
-                        # Rate limit - esperar antes de reintentar
-                        wait_time = 2 ** attempt  # Backoff exponencial
+                        wait_time = 2 ** attempt
                         progress_bar.progress(
-                            min(offset / 500, 0.99),
-                            text=f"Límite de solicitudes alcanzado. Reintentando en {wait_time}s..."
+                            min(len(all_products) / 8500, 0.99),
+                            text=f"Límite de solicitudes. Esperando {wait_time}s..."
                         )
                         import time
                         time.sleep(wait_time)
@@ -184,30 +188,35 @@ def fetch_wix_products():
                 except requests.exceptions.Timeout:
                     if attempt < max_retries - 1:
                         progress_bar.progress(
-                            min(offset / 500, 0.99),
+                            min(len(all_products) / 8500, 0.99),
                             text=f"Timeout. Reintentando ({attempt + 1}/{max_retries})..."
                         )
                         import time
-                        time.sleep(2)
+                        time.sleep(3)
                         continue
                     else:
                         progress_bar.empty()
-                        st.error("❌ Timeout al conectar con Wix. La conexión está tardando demasiado. Intenta nuevamente o usa el método CSV.")
+                        st.error("❌ Timeout al conectar con Wix. Intenta nuevamente.")
                         return None
                         
                 except requests.exceptions.ConnectionError:
                     if attempt < max_retries - 1:
                         progress_bar.progress(
-                            min(offset / 500, 0.99),
+                            min(len(all_products) / 8500, 0.99),
                             text=f"Error de conexión. Reintentando ({attempt + 1}/{max_retries})..."
                         )
                         import time
-                        time.sleep(2)
+                        time.sleep(3)
                         continue
                     else:
                         progress_bar.empty()
-                        st.error("❌ No se pudo conectar con Wix. Verifica tu conexión a internet.")
+                        st.error("❌ No se pudo conectar con Wix.")
                         return None
+            
+            if not success:
+                progress_bar.empty()
+                st.error(f"❌ No se pudo obtener la página {page_count}")
+                break
             
             # Procesar respuesta exitosa
             try:
@@ -219,36 +228,52 @@ def fetch_wix_products():
             
             products = data.get("products", [])
             
+            # Debug: mostrar info de la respuesta
+            st.write(f"DEBUG - Página {page_count}: Recibidos {len(products)} productos. Total acumulado: {len(all_products) + len(products)}")
+            
             if not products:
+                st.info(f"ℹ️ No hay más productos. Se obtuvieron {page_count} páginas.")
                 break
             
             all_products.extend(products)
             
-            # Si obtuvo menos de 100, ya no hay más productos
+            # IMPORTANTE: La condición correcta para continuar
+            # Continuar mientras se reciban exactamente 100 productos
             if len(products) < 100:
+                st.info(f"✅ Última página alcanzada. Total: {len(all_products)} productos en {page_count} páginas.")
                 break
             
             offset += 100
+            
+            # Seguridad: evitar loops infinitos (máximo 100 páginas = 10,000 productos)
+            if page_count > 100:
+                st.warning(f"⚠️ Se alcanzó el límite de páginas. Productos obtenidos: {len(all_products)}")
+                break
         
         progress_bar.progress(1.0, text=f"✅ {len(all_products)} productos obtenidos")
         import time
-        time.sleep(0.5)
+        time.sleep(1)
         progress_bar.empty()
         
         if not all_products:
             st.warning("No se encontraron productos en Wix.")
             return None
         
+        st.success(f"🎉 Total de productos crudos obtenidos de Wix: {len(all_products)}")
+        
         df_processed = process_wix_api_products(all_products)
+        
+        st.info(f"📊 Productos procesados y listos para usar: {len(df_processed)}")
+        
         return df_processed
         
     except requests.exceptions.RequestException as e:
         st.error(f"❌ Error de conexión con Wix API: {e}")
-        st.info("💡 Sugerencia: Intenta usar el método CSV manual o verifica tu conexión a internet.")
         return None
     except Exception as e:
-        st.error(f"❌ Error inesperado al conectar con Wix API: {e}")
-        st.info("💡 Sugerencia: Usa el método CSV manual temporalmente.")
+        st.error(f"❌ Error inesperado: {e}")
+        import traceback
+        st.code(traceback.format_exc())
         return None
 
 
