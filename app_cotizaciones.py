@@ -11,7 +11,6 @@ import os
 import json
 from google.cloud.exceptions import NotFound
 import base64
-import time
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
@@ -101,139 +100,10 @@ def process_wix_csv(uploaded_file):
         st.error(f"❌ Error al procesar CSV: {e}")
         return None
 
-# --- FUNCIÓN DE DIAGNÓSTICO ---
-def diagnose_wix_api():
-    """
-    Función de diagnóstico para entender qué está pasando con la API de Wix.
-    """
-    if not WIX_CONFIG.get('api_key') or not WIX_CONFIG.get('site_id'):
-        st.error("Configuración de Wix no disponible")
-        return
-    
-    st.subheader("🔍 Diagnóstico de API de Wix")
-    
-    # Test 1: Contar productos totales
-    st.write("### Test 1: Conteo total de productos")
-    try:
-        url = "https://www.wixapis.com/stores/v1/products/query"
-        headers = {
-            "Authorization": WIX_CONFIG['api_key'],
-            "Content-Type": "application/json",
-            "wix-site-id": WIX_CONFIG['site_id']
-        }
-        
-        payload = {
-            "query": {
-                "paging": {
-                    "limit": 1,
-                    "offset": 0
-                }
-            }
-        }
-        
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
-        
-        if response.status_code == 200:
-            data = response.json()
-            metadata = data.get("metadata", {})
-            total_count = metadata.get("count")
-            total_items = metadata.get("items")
-            
-            st.write(f"**Total según metadata.count:** {total_count}")
-            st.write(f"**Total según metadata.items:** {total_items}")
-            st.write(f"**Offset actual:** {metadata.get('offset', 0)}")
-            
-            st.json(metadata)
-        else:
-            st.error(f"Error {response.status_code}: {response.text}")
-    except Exception as e:
-        st.error(f"Error en Test 1: {e}")
-    
-    # Test 2: Verificar filtros aplicados
-    st.write("### Test 2: Productos con diferentes filtros")
-    
-    test_cases = [
-        ("Sin filtros", {}),
-        ("Solo visibles", {"filter": {"visible": True}}),
-        ("Incluyendo no visibles", {"filter": {"visible": False}}),
-    ]
-    
-    for test_name, filter_config in test_cases:
-        try:
-            payload = {
-                "query": {
-                    "paging": {"limit": 1, "offset": 0}
-                }
-            }
-            
-            if filter_config:
-                payload["query"].update(filter_config)
-            
-            response = requests.post(url, json=payload, headers=headers, timeout=30)
-            
-            if response.status_code == 200:
-                data = response.json()
-                count = data.get("metadata", {}).get("count", 0)
-                st.write(f"**{test_name}:** {count} productos")
-            else:
-                st.write(f"**{test_name}:** Error {response.status_code}")
-        except Exception as e:
-            st.write(f"**{test_name}:** Error - {e}")
-    
-    # Test 3: Ver estructura de un producto completo
-    st.write("### Test 3: Estructura de producto de ejemplo")
-    try:
-        payload = {
-            "query": {
-                "paging": {"limit": 1, "offset": 0}
-            }
-        }
-        
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
-        
-        if response.status_code == 200:
-            data = response.json()
-            products = data.get("products", [])
-            if products:
-                product = products[0]
-                st.write(f"**Nombre:** {product.get('name')}")
-                st.write(f"**ID:** {product.get('id')}")
-                st.write(f"**Visible:** {product.get('visible')}")
-                st.write(f"**Manage Variants:** {product.get('manageVariants')}")
-                st.write(f"**Número de variantes:** {len(product.get('variants', []))}")
-                
-                with st.expander("Ver JSON completo del producto"):
-                    st.json(product)
-        else:
-            st.error(f"Error obteniendo producto: {response.status_code}")
-    except Exception as e:
-        st.error(f"Error en Test 3: {e}")
-    
-    # Test 4: Verificar colecciones
-    st.write("### Test 4: Verificar colecciones")
-    try:
-        collections_url = "https://www.wixapis.com/stores/v1/collections/query"
-        payload = {"query": {"paging": {"limit": 100}}}
-        
-        response = requests.post(collections_url, json=payload, headers=headers, timeout=30)
-        
-        if response.status_code == 200:
-            data = response.json()
-            collections = data.get("collections", [])
-            st.write(f"**Total de colecciones:** {len(collections)}")
-            
-            for col in collections[:5]:  # Mostrar primeras 5
-                st.write(f"- {col.get('name')}: {col.get('numberOfProducts', 'N/A')} productos")
-        else:
-            st.write(f"Error obteniendo colecciones: {response.status_code}")
-    except Exception as e:
-        st.error(f"Error en Test 4: {e}")
-
-# --- FUNCIONES DE WIX API ---
 @st.cache_data(ttl=3600)  # Cache por 1 hora
 def fetch_wix_products():
     """
-    Obtiene todos los productos desde la API de Wix.
+    Obtiene todos los productos desde la API de Wix usando cursor paging.
     Retorna un DataFrame procesado similar al CSV.
     """
     if not WIX_CONFIG.get('api_key') or not WIX_CONFIG.get('site_id'):
@@ -248,26 +118,30 @@ def fetch_wix_products():
             "wix-site-id": WIX_CONFIG['site_id']
         }
         
-        payload = {
-            "query": {
-                "paging": {
-                    "limit": 100,
-                    "offset": 0
-                }
-            }
-        }
-        
         all_products = []
-        offset = 0
+        cursor = None
         max_retries = 3
+        page_count = 0
         
-        # Paginación para obtener todos los productos
         progress_bar = st.progress(0, text="Conectando con Wix...")
         
-        page_count = 0
         while True:
             page_count += 1
-            payload["query"]["paging"]["offset"] = offset
+            
+            # Construir payload con cursor paging
+            payload = {
+                "query": {
+                    "paging": {
+                        "limit": 100
+                    }
+                }
+            }
+            
+            # Agregar cursor si existe (para páginas siguientes)
+            if cursor:
+                payload["query"]["cursorPaging"] = {
+                    "cursor": cursor
+                }
             
             # Sistema de reintentos
             success = False
@@ -363,15 +237,19 @@ def fetch_wix_products():
             
             all_products.extend(products)
             
-            # IMPORTANTE: La condición correcta para continuar
-            # Continuar mientras se reciban exactamente 100 productos
-            if len(products) < 100:
+            # Obtener el cursor para la siguiente página
+            paging_metadata = data.get("pagingMetadata", {})
+            cursors = paging_metadata.get("cursors", {})
+            next_cursor = cursors.get("next")
+            
+            # Si no hay cursor siguiente, hemos terminado
+            if not next_cursor:
                 st.info(f"✅ Última página alcanzada. Total: {len(all_products)} productos en {page_count} páginas.")
                 break
             
-            offset += 100
+            cursor = next_cursor
             
-            # Seguridad: evitar loops infinitos (máximo 100 páginas = 10,000 productos)
+            # Seguridad: evitar loops infinitos
             if page_count > 100:
                 st.warning(f"⚠️ Se alcanzó el límite de páginas. Productos obtenidos: {len(all_products)}")
                 break
@@ -400,101 +278,6 @@ def fetch_wix_products():
         import traceback
         st.code(traceback.format_exc())
         return None
-
-
-def process_wix_api_products(products: list) -> pd.DataFrame:
-    """
-    Convierte la respuesta de la API de Wix al formato del DataFrame esperado.
-    EXPANDE todas las variantes de cada producto.
-    """
-    processed_products = []
-    
-    for product in products:
-        # Verificar visibilidad del producto padre
-        if not product.get("visible", True):
-            continue
-            
-        # Manejo de variantes
-        if product.get("manageVariants") and product.get("variants"):
-            # EXPANDIR TODAS LAS VARIANTES
-            for variant_data in product["variants"]:
-                variant = variant_data.get("variant", {})
-                sku = variant.get("sku", "")
-                
-                # Solo verificar que tenga SKU
-                if not sku:
-                    continue
-                
-                price_data = variant.get("priceData", {})
-                price = price_data.get("price", 0)
-                
-                media = product.get("media", {})
-                main_media = media.get("mainMedia", {})
-                image_data = main_media.get("image", {})
-                image_url = image_data.get("url", "")
-                
-                if not image_url:
-                    image_url = "https://placehold.co/100x100/EEE/333?text=S/I"
-                
-                variant_name = product.get("name", "")
-                choices = variant_data.get("choices", {})
-                if choices:
-                    variant_suffix = " - " + ", ".join(choices.values())
-                    variant_name += variant_suffix
-                
-                stock = product.get("stock", {})
-                inventory = 0
-                if stock.get("trackInventory"):
-                    inventory = stock.get("quantity", 0)
-                
-                processed_products.append({
-                    "sku": sku,
-                    "nombre": variant_name,
-                    "precio_iva_incluido": price,
-                    "imagen_url": image_url,
-                    "inventory": inventory
-                })
-        else:
-            # Producto simple sin variantes
-            sku = product.get("sku", "")
-            
-            if not sku:
-                continue
-            
-            price_data = product.get("priceData", {})
-            price = price_data.get("price", 0)
-            
-            media = product.get("media", {})
-            main_media = media.get("mainMedia", {})
-            image_data = main_media.get("image", {})
-            image_url = image_data.get("url", "")
-            
-            if not image_url:
-                image_url = "https://placehold.co/100x100/EEE/333?text=S/I"
-            
-            stock = product.get("stock", {})
-            inventory = 0
-            if stock.get("trackInventory"):
-                inventory = stock.get("quantity", 0)
-            
-            processed_products.append({
-                "sku": sku,
-                "nombre": product.get("name", ""),
-                "precio_iva_incluido": price,
-                "imagen_url": image_url,
-                "inventory": inventory
-            })
-    
-    df = pd.DataFrame(processed_products)
-    
-    if df.empty:
-        return df
-    
-    df.dropna(subset=['sku', 'nombre'], inplace=True)
-    df['inventory'] = pd.to_numeric(df['inventory'], errors='coerce').fillna(0).astype(int)
-    df['precio_iva_incluido'] = pd.to_numeric(df['precio_iva_incluido'], errors='coerce').fillna(0)
-    
-    return df[['sku', 'nombre', 'precio_iva_incluido', 'imagen_url', 'inventory']]
 
 def remove_item(sku):
     if sku in st.session_state.quote_items:
@@ -915,6 +698,133 @@ def clear_form_state():
 
 init_session_state()
 
+def diagnose_wix_api():
+    """
+    Función de diagnóstico para entender qué está pasando con la API de Wix.
+    """
+    if not WIX_CONFIG.get('api_key') or not WIX_CONFIG.get('site_id'):
+        st.error("Configuración de Wix no disponible")
+        return
+    
+    st.subheader("🔍 Diagnóstico de API de Wix")
+    
+    # Test 1: Contar productos totales
+    st.write("### Test 1: Conteo total de productos")
+    try:
+        url = "https://www.wixapis.com/stores/v1/products/query"
+        headers = {
+            "Authorization": WIX_CONFIG['api_key'],
+            "Content-Type": "application/json",
+            "wix-site-id": WIX_CONFIG['site_id']
+        }
+        
+        payload = {
+            "query": {
+                "paging": {
+                    "limit": 1,
+                    "offset": 0
+                }
+            }
+        }
+        
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            data = response.json()
+            metadata = data.get("metadata", {})
+            total_count = metadata.get("count")
+            total_items = metadata.get("items")
+            
+            st.write(f"**Total según metadata.count:** {total_count}")
+            st.write(f"**Total según metadata.items:** {total_items}")
+            st.write(f"**Offset actual:** {metadata.get('offset', 0)}")
+            
+            st.json(metadata)
+        else:
+            st.error(f"Error {response.status_code}: {response.text}")
+    except Exception as e:
+        st.error(f"Error en Test 1: {e}")
+    
+    # Test 2: Verificar filtros aplicados
+    st.write("### Test 2: Productos con diferentes filtros")
+    
+    test_cases = [
+        ("Sin filtros", {}),
+        ("Solo visibles", {"filter": {"visible": True}}),
+        ("Incluyendo no visibles", {"filter": {"visible": False}}),
+    ]
+    
+    for test_name, filter_config in test_cases:
+        try:
+            payload = {
+                "query": {
+                    "paging": {"limit": 1, "offset": 0}
+                }
+            }
+            
+            if filter_config:
+                payload["query"].update(filter_config)
+            
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            
+            if response.status_code == 200:
+                data = response.json()
+                count = data.get("metadata", {}).get("count", 0)
+                st.write(f"**{test_name}:** {count} productos")
+            else:
+                st.write(f"**{test_name}:** Error {response.status_code}")
+        except Exception as e:
+            st.write(f"**{test_name}:** Error - {e}")
+    
+    # Test 3: Ver estructura de un producto completo
+    st.write("### Test 3: Estructura de producto de ejemplo")
+    try:
+        payload = {
+            "query": {
+                "paging": {"limit": 1, "offset": 0}
+            }
+        }
+        
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            data = response.json()
+            products = data.get("products", [])
+            if products:
+                product = products[0]
+                st.write(f"**Nombre:** {product.get('name')}")
+                st.write(f"**ID:** {product.get('id')}")
+                st.write(f"**Visible:** {product.get('visible')}")
+                st.write(f"**Manage Variants:** {product.get('manageVariants')}")
+                st.write(f"**Número de variantes:** {len(product.get('variants', []))}")
+                
+                with st.expander("Ver JSON completo del producto"):
+                    st.json(product)
+        else:
+            st.error(f"Error obteniendo producto: {response.status_code}")
+    except Exception as e:
+        st.error(f"Error en Test 3: {e}")
+    
+    # Test 4: Verificar colecciones
+    st.write("### Test 4: Verificar colecciones")
+    try:
+        collections_url = "https://www.wixapis.com/stores/v1/collections/query"
+        payload = {"query": {"paging": {"limit": 100}}}
+        
+        response = requests.post(collections_url, json=payload, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            data = response.json()
+            collections = data.get("collections", [])
+            st.write(f"**Total de colecciones:** {len(collections)}")
+            
+            for col in collections[:5]:  # Mostrar primeras 5
+                st.write(f"- {col.get('name')}: {col.get('numberOfProducts', 'N/A')} productos")
+        else:
+            st.write(f"Error obteniendo colecciones: {response.status_code}")
+    except Exception as e:
+        st.error(f"Error en Test 4: {e}")
+
 # --- BARRA LATERAL ---
 with st.sidebar:
     st.title("Gestión de Cotizaciones")
@@ -946,7 +856,7 @@ with st.sidebar:
     if st.session_state.tienda_seleccionada:
         st.success(f"Tienda seleccionada: **{st.session_state.tienda_seleccionada}**")
     
-    # Botones de Wix
+    # Botón de sincronización Wix
     if WIX_CONFIG.get('api_key'):
         st.divider()
         if st.button("🔄 Sincronizar Wix", use_container_width=True, help="Actualizar catálogo desde Wix"):
@@ -956,6 +866,7 @@ with st.sidebar:
                 st.success("✅ Catálogo sincronizado")
                 st.rerun()
         
+        # El botón de diagnóstico debe estar al mismo nivel que el de sincronizar
         if st.button("🔍 Diagnosticar API Wix", use_container_width=True):
             diagnose_wix_api()
 
@@ -1055,10 +966,9 @@ else:
             col1, col2 = st.columns([3, 1])
             
             with col1:
+                st.info("Se cargarán automáticamente los productos desde tu tienda Wix.")
                 if st.session_state.get('products_df') is not None:
                     st.success(f"✅ Catálogo cargado: {len(st.session_state.products_df)} productos")
-                else:
-                    st.info("👆 Presiona el botón 'Actualizar' para cargar los productos desde Wix.")
             
             with col2:
                 if st.button("🔄 Actualizar", type="primary", use_container_width=True):
@@ -1193,6 +1103,7 @@ else:
                 subtotal = sum(item['valor_total'] for item in st.session_state.quote_items.values())
                 total_unidades = sum(item['cantidad'] for item in st.session_state.quote_items.values())
 
+                # --- INICIO: SECCIÓN DE CÓDIGO MODIFICADA ---
                 st.subheader("Costo de Envío (Flete)")
                 
                 opcion_flete = st.radio(
@@ -1225,6 +1136,7 @@ else:
                 t2.metric("FLETE", flete_display_val)
                 
                 t3.metric("TOTAL COTIZACION", format_currency(total_cotizacion))
+                # --- FIN: SECCIÓN DE CÓDIGO MODIFICADA ---
 
                 st.caption(f"Total de unidades: {total_unidades}")
                 
